@@ -1,0 +1,273 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --driver-bg: #0f172a;
+  --driver-card: #1e293b;
+  --admin-bg: #ffffff;
+  --admin-card: #f8fafc;
+}
+
+[data-theme="driver"] {
+  background-color: var(--driver-bg);
+  color: #f1f5f9;
+}
+
+[data-theme="admin"] {
+  background-color: var(--admin-bg);
+  color: #0f172a;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+}
+
+/* RTL Support */
+[dir="rtl"] {
+  direction: rtl;
+}
+
+[dir="rtl"] * {
+  text-align: right;
+}
+
+/* Mobile PWA feel - allow scrolling */
+html, body {
+  height: 100%;
+  overflow: auto;
+}
+
+#__next {
+  height: auto;
+  min-height: 100%;
+}
+
+/* Safe area insets for mobile devices */
+@supports (padding: max(0px)) {
+  .safe-top {
+    padding-top: max(env(safe-area-inset-top), 1rem);
+  }
+  
+  .safe-bottom {
+    padding-bottom: max(env(safe-area-inset-bottom), 4rem);
+  }
+  
+  .safe-left {
+    padding-left: max(env(safe-area-inset-left), 1rem);
+  }
+  
+  .safe-right {
+    padding-right: max(env(safe-area-inset-right), 1rem);
+  }
+  
+  .pt-safe {
+    padding-top: max(env(safe-area-inset-top), 0px);
+  }
+  
+  .pb-safe {
+    padding-bottom: max(env(safe-area-inset-bottom), 0px);
+  }
+  
+  .pl-safe {
+    padding-left: max(env(safe-area-inset-left), 0px);
+  }
+  
+  .pr-safe {
+    padding-right: max(env(safe-area-inset-right), 0px);
+  }
+}
+
+/* Google Maps container fixes */
+.gm-style {
+  height: 100%;
+  width: 100%;
+  z-index: 0 !important;
+}
+
+/* Ensure Google Maps controls are always visible and clickable */
+.gm-control-container {
+  pointer-events: auto !important;
+  z-index: 1 !important;
+}
+
+.gm-fullscreen-control,
+.gm-zoom-control,
+.gm-streetview-control {
+  pointer-events: auto !important;
+  z-index: 1 !important;
+}
+
+/* Zone Focus Mode - ensure map is interactive */
+[data-zone-focus-mode] {
+  pointer-events: auto !important;
+}
+
+[data-zone-focus-mode] .gm-style {
+  pointer-events: auto !important;
+}
+
+[data-zone-focus-mode] .gm-control-container {
+  pointer-events: auto !important;
+  z-index: 1 !important;
+}
+
+[data-zone-focus-mode] .gm-bundled-control {
+  pointer-events: auto !important;
+  z-index: 1 !important;
+}
+
+/* Ensure map canvas is clickable */
+[data-zone-focus-mode] .gm-style > div:first-child {
+  pointer-events: auto !important;
+}
+
+/* Overlays should not block map clicks */
+[data-zone-focus-mode] > div[style*="pointer-events"] {
+  pointer-events: none !important;
+}
+
+[data-zone-focus-mode] > div[style*="pointer-events"] > * {
+  pointer-events: auto !important;
+}
+
+/* Z-index architecture */
+.map-background {
+  z-index: 0 !important;
+}
+
+.ui-overlay {
+  z-index: 10 !important;
+}
+
+.mobile-nav {
+  z-index: 50 !important;
+}
+
+.modal-overlay {
+  z-index: 100 !important;
+}
+
+/* Apple-Style Glassmorphism */
+.glass-card {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+}
+
+.glass-card-light {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.2);
+}
+
+/* Enhanced glassmorphism for mobile (higher contrast) */
+@media (max-width: 640px) {
+  .glass-card-light {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(24px) saturate(200%);
+    -webkit-backdrop-filter: blur(24px) saturate(200%);
+    border: 2px solid rgba(255, 255, 255, 0.8);
+    box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.15);
+  }
+}
+
+.glass-card-dark {
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+/* Bottom Sheet Animations */
+@keyframes slide-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+
+/* Custom scrollbar for zone layers */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* Sonner Toast Customization - Apple-style glassmorphism */
+[data-sonner-toast] {
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 2px solid rgba(255, 255, 255, 0.5) !important;
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.2) !important;
+}
+
+[data-sonner-toast][data-type="success"] {
+  background: rgba(240, 253, 244, 0.95) !important;
+  border-color: rgba(34, 197, 94, 0.3) !important;
+}
+
+[data-sonner-toast][data-type="error"] {
+  background: rgba(254, 242, 242, 0.95) !important;
+  border-color: rgba(239, 68, 68, 0.3) !important;
+}
+
+[data-sonner-toast][data-type="info"] {
+  background: rgba(239, 246, 255, 0.95) !important;
+  border-color: rgba(59, 130, 246, 0.3) !important;
+}
+
+[data-sonner-toast][data-type="warning"] {
+  background: rgba(255, 251, 235, 0.95) !important;
+  border-color: rgba(245, 158, 11, 0.3) !important;
+}
+
+/* Touch-friendly interactions for mobile */
+.touch-manipulation {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Safe area support for mobile */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
