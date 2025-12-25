@@ -78,12 +78,8 @@ export function createClient() {
         autoRefreshToken: true,
         flowType: 'pkce',
       },
-      cookieOptions: {
-        name: 'sb-auth-token',
-        sameSite: 'lax',
-        path: '/',
-        secure: process.env.NODE_ENV === 'production',
-      }
+      // Using default Supabase cookie naming convention for middleware compatibility
+      // Cookies will be named: sb-<project-ref>-auth-token
     }
   )
 }

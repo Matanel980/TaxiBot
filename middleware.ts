@@ -30,7 +30,10 @@ export async function middleware(request: NextRequest) {
   )
 
   // Critical for session refreshing in Middleware
-  // EMERGENCY FIX: Explicitly get session before user to ensure SSR context is initialized
+  // DEBUG: Log all cookies to verify they're being sent
+  const allCookies = request.cookies.getAll()
+  console.log(`[Middleware] Cookies received:`, allCookies.map(c => `${c.name}=${c.value.substring(0, 20)}...`).join(', '))
+  
   const { data: { session } } = await supabase.auth.getSession()
   const { data: { user } } = await supabase.auth.getUser()
   

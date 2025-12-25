@@ -140,6 +140,16 @@ export default function LoginPage() {
         userId: session?.user?.id,
         phone: session?.user?.phone 
       })
+      
+      // DEBUG: Check browser cookies
+      console.log('[DEBUG] Browser cookies:', document.cookie.split(';').map(c => c.trim().split('=')[0]))
+      
+      if (!session) {
+        console.error('[ERROR] Session not persisted after OTP verification!')
+        setError('שגיאה בשמירת ההתחברות - אנא נסה שוב')
+        setLoading(false)
+        return
+      }
 
       const user = verifyData.user || session?.user
       
