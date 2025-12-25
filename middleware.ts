@@ -35,7 +35,7 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   // LOGGING FOR VERCEL
-  console.log(`[Middleware] Path: ${pathname} | User ID: ${user?.id || 'none'}`)
+  console.log(`[Middleware] Path: ${pathname} | User ID: ${user?.id || 'none'} | Phone: ${user?.phone || 'none'}`)
 
   // Helper for strict redirects with cookie propagation
   const redirect = (path: string, reason: string) => {
@@ -43,7 +43,7 @@ export async function middleware(request: NextRequest) {
     const url = new URL(path, request.url)
     const redirectResponse = NextResponse.redirect(url)
     
-    // Propagate all headers/cookies to the new response
+    // Copy all headers/cookies from the current response to the redirect response
     response.headers.forEach((value, key) => {
       redirectResponse.headers.set(key, value)
     })
@@ -51,8 +51,15 @@ export async function middleware(request: NextRequest) {
     return redirectResponse
   }
 
-  // Admin whitelist emails
+  // Auth-In-Progress Grace: Allow /auth/* routes
+  if (pathname.startsWith('/auth/')) {
+    return response
+  }
+
+  // Admin whitelist emails and phones
   const isAdminEmail = user?.email === 'mamat.clutchy@gmail.com' || user?.email === 'matanel.clutchy@gmail.com'
+  const isAdminPhone = user?.phone === '+972526099607' || user?.phone === '972526099607'
+  const isDriverPhone = user?.phone === '+972509800301' || user?.phone === '972509800301'
 
   // Define route categories
   const isDriverPath = pathname.startsWith('/driver')
@@ -66,29 +73,51 @@ export async function middleware(request: NextRequest) {
       return redirect('/login', 'Unauthenticated access to protected route')
     }
 
-    const { data: profile, error } = await supabase
-      .from('profiles')
-      .select('role, full_name, vehicle_number, car_type')
-      .eq('id', user.id)
-      .single()
+    // Performance Optimization: If it's a test phone, skip DB query for role
+    let userRole = ''
+    let fullName = ''
+    let vehicleNumber = ''
+    let carType = ''
 
-    if (error || !profile) {
-      console.error(`[Middleware] Profile fetch error for ${user.id}:`, error)
-      return redirect('/login', 'Profile not found or fetch failed')
+    if (isAdminPhone) {
+      userRole = 'admin'
+    } else if (isDriverPhone) {
+      userRole = 'driver'
+    } else {
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('role, full_name, vehicle_number, car_type')
+        .eq('id', user.id)
+        .single()
+
+      if (error || !profile) {
+        console.error(`[Middleware] Profile fetch error for ${user.id}:`, error)
+        // Check if we can fallback to email-based admin
+        if (isAdminEmail) {
+          userRole = 'admin'
+        } else {
+          return redirect('/login', 'Profile not found or fetch failed')
+        }
+      } else {
+        userRole = profile.role
+        fullName = profile.full_name
+        vehicleNumber = profile.vehicle_number
+        carType = profile.car_type
+      }
     }
 
     // 2. Strict Role-Based Access Control (RBAC)
-    if (isAdminPath && profile.role !== 'admin' && !isAdminEmail) {
+    if (isAdminPath && userRole !== 'admin' && !isAdminEmail && !isAdminPhone) {
       return redirect('/login', 'Non-admin attempt to access /admin')
     }
 
-    if (isDriverPath && profile.role !== 'driver' && !isAdminEmail) {
+    if (isDriverPath && userRole !== 'driver' && !isAdminEmail && !isAdminPhone) {
       return redirect('/login', 'Unauthorized access to /driver')
     }
 
     // 3. Driver Onboarding Guard
-    if (profile.role === 'driver' && !isAdminEmail) {
-      const isIncomplete = !profile.full_name || !profile.vehicle_number || !profile.car_type
+    if (userRole === 'driver' && !isAdminEmail && !isAdminPhone && !isDriverPhone) {
+      const isIncomplete = !fullName || !vehicleNumber || !carType
       
       if (isIncomplete && !isOnboardingPath) {
         return redirect('/onboarding', 'Driver profile incomplete, forcing onboarding')
@@ -102,6 +131,14 @@ export async function middleware(request: NextRequest) {
 
   // 4. Redirect logged-in users away from Login page
   if (isLoginPath && user) {
+    if (isAdminEmail || isAdminPhone) {
+      return redirect('/admin/dashboard', 'Authenticated admin on /login')
+    }
+    
+    if (isDriverPhone) {
+      return redirect('/driver/dashboard', 'Authenticated test driver on /login')
+    }
+
     const { data: profile } = await supabase
       .from('profiles')
       .select('role, full_name, vehicle_number, car_type')
@@ -109,7 +146,7 @@ export async function middleware(request: NextRequest) {
       .single()
 
     if (profile) {
-      if (profile.role === 'admin' || isAdminEmail) {
+      if (profile.role === 'admin') {
         return redirect('/admin/dashboard', 'Authenticated admin on /login')
       }
       

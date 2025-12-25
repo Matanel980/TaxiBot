@@ -75,6 +75,7 @@ export function createClient() {
       auth: {
         persistSession: true,
         detectSessionInUrl: true,
+        autoRefreshToken: true,
         flowType: 'pkce',
       },
       cookieOptions: {

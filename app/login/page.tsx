@@ -130,14 +130,18 @@ export default function LoginPage() {
           .eq('id', user.id)
           .single()
 
-        if (profile?.role === 'driver') {
-          if (!profile.full_name || !profile.vehicle_number || !profile.car_type) {
+        // Admin whitelist phones
+        const isAdminPhone = user.phone === '+972526099607' || user.phone === '972526099607'
+        const isDriverPhone = user.phone === '+972509800301' || user.phone === '972509800301'
+
+        if (profile?.role === 'admin' || isAdminPhone) {
+          window.location.href = '/admin/dashboard'
+        } else if (profile?.role === 'driver' || isDriverPhone) {
+          if (!profile?.full_name || !profile?.vehicle_number || !profile?.car_type) {
             window.location.href = '/onboarding'
           } else {
             window.location.href = '/driver/dashboard'
           }
-        } else if (profile?.role === 'admin') {
-          window.location.href = '/admin/dashboard'
         } else {
           setError('לא נמצא תפקיד למשתמש זה')
         }
