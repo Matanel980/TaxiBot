@@ -7,7 +7,7 @@ export const GOOGLE_MAPS_CONFIG = {
   apiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || '',
   language: 'iw', // Hebrew
   region: 'IL', // Israel
-  libraries: ['places', 'geometry', 'drawing'] as const, // DO NOT CHANGE - must match everywhere
+  libraries: ['places', 'geometry', 'drawing'] as any[], // Fix: remove 'as const' to allow mutable Library[]
 }
 
 // Standard loader options for useJsApiLoader

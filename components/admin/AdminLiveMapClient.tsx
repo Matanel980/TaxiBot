@@ -135,19 +135,19 @@ const DriverMarker = React.memo(({
   const icon = createTaxiIcon(status, google, heading)
   
   // Adjust icon opacity if disconnected (presence heartbeat failed)
-  if (isDisconnected && icon) {
-    icon.fillOpacity = 0.5
-    icon.strokeOpacity = 0.5
-  }
+  const markerIcon = useMemo(() => {
+    if (!icon) return undefined
+    return icon
+  }, [icon])
 
   return (
     <Marker
       position={position}
-      icon={icon}
+      icon={markerIcon}
       onClick={onSelect}
       animation={isSelected ? google.maps.Animation.BOUNCE : undefined}
       zIndex={isSelected ? 1000 : (isDisconnected ? 0 : 500)}
-      optimized={true}
+      opacity={isDisconnected ? 0.5 : 1.0} // Use the Marker's native opacity property
     />
   )
 }, (prevProps, nextProps) => {

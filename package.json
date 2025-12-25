@@ -33,6 +33,7 @@
     "typescript": "^5.9.3"
   },
   "devDependencies": {
+    "@types/geojson": "^7946.0.16",
     "@types/google.maps": "^3.58.1"
   }
 }
