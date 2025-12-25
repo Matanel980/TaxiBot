@@ -61,10 +61,8 @@ export async function middleware(request: NextRequest) {
     return response
   }
 
-  // Admin whitelist emails and phones
+  // Admin whitelist emails (fallback only)
   const isAdminEmail = user?.email === 'mamat.clutchy@gmail.com' || user?.email === 'matanel.clutchy@gmail.com'
-  const isAdminPhone = user?.phone === '+972526099607' || user?.phone === '972526099607'
-  const isDriverPhone = user?.phone === '+972509800301' || user?.phone === '972509800301'
 
   // Define route categories
   const isDriverPath = pathname.startsWith('/driver')
@@ -78,50 +76,40 @@ export async function middleware(request: NextRequest) {
       return redirect('/login', 'Unauthenticated access to protected route')
     }
 
-    // Performance Optimization: If it's a test phone, skip DB query for role
-    let userRole = ''
-    let fullName = ''
-    let vehicleNumber = ''
-    let carType = ''
+    // All users must have a profile in the database
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('role, full_name, vehicle_number, car_type')
+      .eq('id', user.id)
+      .single()
 
-    if (isAdminPhone) {
-      userRole = 'admin'
-    } else if (isDriverPhone) {
-      userRole = 'driver'
-    } else {
-      const { data: profile, error } = await supabase
-        .from('profiles')
-        .select('role, full_name, vehicle_number, car_type')
-        .eq('id', user.id)
-        .single()
-
-      if (error || !profile) {
-        console.error(`[Middleware] Profile fetch error for ${user.id}:`, error)
-        // Check if we can fallback to email-based admin
-        if (isAdminEmail) {
-          userRole = 'admin'
-        } else {
-          return redirect('/login', 'Profile not found or fetch failed')
-        }
+    if (error || !profile) {
+      console.error(`[Middleware] Profile not found for user ${user.id}:`, error)
+      // Check if we can fallback to email-based admin
+      if (isAdminEmail) {
+        console.log('[Middleware] Profile not found but admin email whitelisted')
+        // Allow admin email as fallback but log warning
       } else {
-        userRole = profile.role
-        fullName = profile.full_name
-        vehicleNumber = profile.vehicle_number
-        carType = profile.car_type
+        return redirect('/login', 'Profile not found - contact admin')
       }
     }
 
+    const userRole = profile?.role || (isAdminEmail ? 'admin' : '')
+    const fullName = profile?.full_name || ''
+    const vehicleNumber = profile?.vehicle_number || ''
+    const carType = profile?.car_type || ''
+
     // 2. Strict Role-Based Access Control (RBAC)
-    if (isAdminPath && userRole !== 'admin' && !isAdminEmail && !isAdminPhone) {
+    if (isAdminPath && userRole !== 'admin' && !isAdminEmail) {
       return redirect('/login', 'Non-admin attempt to access /admin')
     }
 
-    if (isDriverPath && userRole !== 'driver' && !isAdminEmail && !isAdminPhone) {
+    if (isDriverPath && userRole !== 'driver' && !isAdminEmail) {
       return redirect('/login', 'Unauthorized access to /driver')
     }
 
     // 3. Driver Onboarding Guard
-    if (userRole === 'driver' && !isAdminEmail && !isAdminPhone && !isDriverPhone) {
+    if (userRole === 'driver' && !isAdminEmail) {
       const isIncomplete = !fullName || !vehicleNumber || !carType
       
       if (isIncomplete && !isOnboardingPath) {
@@ -136,12 +124,8 @@ export async function middleware(request: NextRequest) {
 
   // 4. Redirect logged-in users away from Login page
   if (isLoginPath && user) {
-    if (isAdminEmail || isAdminPhone) {
+    if (isAdminEmail) {
       return redirect('/admin/dashboard', 'Authenticated admin on /login')
-    }
-    
-    if (isDriverPhone) {
-      return redirect('/driver/dashboard', 'Authenticated test driver on /login')
     }
 
     const { data: profile } = await supabase

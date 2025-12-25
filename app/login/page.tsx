@@ -42,6 +42,23 @@ export default function LoginPage() {
 
       console.log('[DEBUG] Login - Strictly formatted:', formattedPhone)
 
+      // WHITELIST CHECK: Query profiles table BEFORE sending OTP
+      console.log('[DEBUG] Checking whitelist for:', formattedPhone)
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('id, role, full_name')
+        .eq('phone', formattedPhone)
+        .single()
+
+      if (profileError || !profile) {
+        console.log('[DEBUG] Whitelist check failed:', profileError)
+        setError('המספר לא מורשה להתחברות. אנא פנה למנהל התחנה.')
+        setLoading(false)
+        return
+      }
+
+      console.log('[DEBUG] Whitelist check passed for:', profile.full_name, 'Role:', profile.role)
+
       const { error } = await supabase.auth.signInWithOtp({
         phone: formattedPhone, // Use strictly formatted phone
         options: {
@@ -156,46 +173,58 @@ export default function LoginPage() {
       if (user) {
         console.log('[DEBUG] User authenticated:', user.id, user.phone)
         
-        // Admin whitelist phones - PRIORITY CHECK
-        const isAdminPhone = user.phone === '+972526099607' || user.phone === '972526099607'
-        const isDriverPhone = user.phone === '+972509800301' || user.phone === '972509800301'
+        // Find the pre-created profile by phone
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('id, role, full_name, vehicle_number, car_type')
+          .eq('phone', phone)
+          .single()
+        
+        if (profileError || !profile) {
+          console.error('[ERROR] Profile not found for phone:', phone)
+          setError('לא נמצא פרופיל למשתמש זה. אנא פנה למנהל התחנה.')
+          setLoading(false)
+          return
+        }
 
-        if (isAdminPhone) {
-          console.log('[DEBUG] Admin phone detected, redirecting...')
+        console.log('[DEBUG] Profile found:', profile)
+
+        // Check if profile needs to be linked to auth user
+        if (profile.id !== user.id) {
+          console.log('[DEBUG] Linking profile to auth user. Old ID:', profile.id, 'New ID:', user.id)
+          
+          // Update profile with auth user ID to link them
+          const { error: updateError } = await supabase
+            .from('profiles')
+            .update({ id: user.id })
+            .eq('phone', phone)
+          
+          if (updateError) {
+            console.error('[ERROR] Failed to link profile to auth user:', updateError)
+            // Continue anyway - profile exists but might need manual linking
+          } else {
+            console.log('[DEBUG] Successfully linked profile to auth user')
+          }
+        }
+
+        // Redirect based on role
+        if (profile.role === 'admin') {
+          console.log('[DEBUG] Admin login, redirecting to admin dashboard')
           alert('✅ התחברת בהצלחה כמנהל!')
           window.location.replace('/admin/dashboard')
-          return
-        }
-        
-        if (isDriverPhone) {
-          console.log('[DEBUG] Driver phone detected, redirecting...')
+        } else if (profile.role === 'driver') {
+          // Check if onboarding needed
+          const isIncomplete = !profile.vehicle_number || !profile.car_type
+          console.log('[DEBUG] Driver login, incomplete profile:', isIncomplete)
+          
           alert('✅ התחברת בהצלחה כנהג!')
-          window.location.replace('/driver/dashboard')
-          return
-        }
-
-        // For non-test phones, check profile
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('role, full_name, vehicle_number, car_type')
-          .eq('id', user.id)
-          .single()
-
-        console.log('[DEBUG] Profile data:', profile)
-
-        if (profile?.role === 'admin') {
-          alert('✅ התחברת בהצלחה!')
-          window.location.replace('/admin/dashboard')
-        } else if (profile?.role === 'driver') {
-          const isIncomplete = !profile?.full_name || !profile?.vehicle_number || !profile?.car_type
-          alert('✅ התחברת בהצלחה!')
           if (isIncomplete) {
             window.location.replace('/onboarding')
           } else {
             window.location.replace('/driver/dashboard')
           }
         } else {
-          setError('לא נמצא תפקיד למשתמש זה')
+          setError('תפקיד לא תקין למשתמש זה')
         }
       } else {
         setError('שגיאה באימות - אנא נסה שוב')
@@ -213,7 +242,7 @@ export default function LoginPage() {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl sm:text-3xl font-bold">TaxiFlow</CardTitle>
-          <CardDescription className="text-sm sm:text-base">התחברות למערכת ניהול מוניות</CardDescription>
+          <CardDescription className="text-sm sm:text-base">התחברות למערכת - נהגים מורשים בלבד</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {step === 'phone' ? (
