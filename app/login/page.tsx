@@ -126,12 +126,16 @@ export default function LoginPage() {
       if (user) {
         const { data: profile } = await supabase
           .from('profiles')
-          .select('role')
+          .select('role, full_name, vehicle_number, car_type')
           .eq('id', user.id)
           .single()
 
         if (profile?.role === 'driver') {
-          window.location.href = '/driver/dashboard'
+          if (!profile.full_name || !profile.vehicle_number || !profile.car_type) {
+            window.location.href = '/onboarding'
+          } else {
+            window.location.href = '/driver/dashboard'
+          }
         } else if (profile?.role === 'admin') {
           window.location.href = '/admin/dashboard'
         } else {

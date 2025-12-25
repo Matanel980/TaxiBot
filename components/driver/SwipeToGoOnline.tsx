@@ -17,36 +17,19 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
   const containerRef = useRef<HTMLDivElement>(null)
   const x = useMotionValue(0)
   
-  // Use direct motion value for 1:1 finger/mouse tracking during drag
-  // Apply spring only on snap-back, not during active drag
+  // Use spring only for the snap-back animation
   const springX = useSpring(x, { 
-    stiffness: 800, // Higher stiffness for snappier response
-    damping: 40, 
-    mass: 0.3 
+    stiffness: 1000, 
+    damping: 50, 
+    mass: 0.1 
   })
   
-  // Calculate swipe distance - direct 1:1 tracking during drag
-  const swipeDistance = useTransform(x, (latest) => {
-    if (!containerRef.current) return 0
-    const containerWidth = containerRef.current.offsetWidth
-    const thumbWidth = 96 // Account for wider thumb
-    return Math.max(0, Math.min(latest, containerWidth - thumbWidth - 16))
-  })
-  
-  // Spring-based distance for snap-back animation
-  const springDistance = useTransform(springX, (latest) => {
-    if (!containerRef.current) return 0
-    const containerWidth = containerRef.current.offsetWidth
-    const thumbWidth = 96
-    return Math.max(0, Math.min(latest, containerWidth - thumbWidth - 16))
-  })
-
   // Reset position when status changes externally
   useEffect(() => {
     if (!isDragging) {
       const containerWidth = containerRef.current?.offsetWidth || 0
-      const targetX = isOnline ? containerWidth - 96 - 16 : 0
-      x.set(targetX)
+      const maxDistance = containerWidth - 96 - 16
+      x.set(isOnline ? maxDistance : 0)
     }
   }, [isOnline, isDragging, x])
 
@@ -54,14 +37,14 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
     setIsDragging(false)
     const containerWidth = containerRef.current?.offsetWidth || 0
     const maxDistance = containerWidth - 96 - 16
-    const threshold = maxDistance * 0.3 // Even more sensitive (30%)
+    const threshold = maxDistance * 0.3
     
     const velocity = info.velocity.x
     const offset = info.offset.x
 
     if (!isOnline) {
       // Trying to go online (drag right)
-      if (offset > threshold || velocity > 300) { // Lower velocity threshold
+      if (offset > threshold || velocity > 200) {
         onToggle(true)
         x.set(maxDistance)
       } else {
@@ -69,7 +52,7 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
       }
     } else {
       // Trying to go offline (drag left)
-      if (offset < -threshold || velocity < -300) { // Lower velocity threshold
+      if (offset < -threshold || velocity < -200) {
         onToggle(false)
         x.set(0)
       } else {
@@ -78,27 +61,19 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
     }
   }
 
-  const handleDragStart = () => {
-    setIsDragging(true)
-  }
-
-  // ... rest of the component
-
   // Calculate progress percentage for visual feedback (0-100%)
-  const progressPercentage = useTransform(swipeDistance, (latest) => {
+  const progressPercentage = useTransform(x, (latest) => {
     if (!containerRef.current) return 0
     const containerWidth = containerRef.current.offsetWidth
-    const maxDistance = containerWidth - 96
+    const maxDistance = containerWidth - 96 - 16
     return maxDistance > 0 ? (latest / maxDistance) * 100 : 0
   })
 
-  // Enhanced visual feedback - background color intensity based on progress
+  // Visual feedback intensity
   const backgroundIntensity = useTransform(progressPercentage, (p) => {
-    // More intense color change as user swipes
-    return Math.min(p / 100, 1) * 0.4 // 0 to 40% opacity
+    return Math.min(p / 100, 1) * 0.4
   })
 
-  // Transform for progress width - must be at top level
   const progressWidth = useTransform(progressPercentage, (p) => `${p}%`)
 
   if (loading) {
@@ -111,7 +86,7 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
 
   return (
     <motion.div
-      className="flex flex-col items-center gap-4 sm:gap-6 p-4 sm:p-6 w-full"
+      className="flex flex-col items-center gap-4 sm:gap-6 p-4 sm:p-6 w-full no-transition"
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
@@ -128,18 +103,16 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
         </p>
       </div>
 
-      {/* Swipe Container - Full Width on Mobile */}
       <div
         ref={containerRef}
         className={cn(
           "relative w-full h-16 sm:h-20 rounded-full overflow-hidden",
           "bg-gray-800 border-2 transition-colors duration-200",
-          "touch-none select-none", // Prevent scroll and selection during swipe
-          "cursor-default",
+          "select-none cursor-default",
           isOnline ? "border-green-500" : "border-gray-600"
         )}
+        style={{ touchAction: 'pan-y' }}
       >
-        {/* Background Text */}
         <div className="absolute inset-0 flex items-center justify-center z-0 pointer-events-none">
           <span className={cn(
             "text-sm font-semibold transition-opacity duration-200",
@@ -149,7 +122,6 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
           </span>
         </div>
 
-        {/* Enhanced Progress Indicator with Dynamic Intensity */}
         <motion.div
           className="absolute inset-0 bg-green-500 pointer-events-none"
           style={{
@@ -158,29 +130,23 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
           }}
         />
 
-        {/* Swipeable Thumb - 1:1 Responsive */}
         <motion.div
           drag="x"
           dragConstraints={{ left: 0, right: containerRef.current ? containerRef.current.offsetWidth - 96 - 16 : 0 }}
-          dragElastic={0} // No elasticity during drag for "native" feel
+          dragElastic={0}
           dragMomentum={false}
-          onDragStart={handleDragStart}
+          onDragStart={() => setIsDragging(true)}
           onDragEnd={handleDragEnd}
-          style={{ 
-            x: isDragging ? swipeDistance : springDistance,
-            touchAction: 'none' // Inline safety
-          }}
+          style={{ x }}
           className={cn(
             "absolute left-2 top-2 bottom-2 w-24 sm:w-20 h-[calc(100%-1rem)] rounded-full",
             "flex items-center justify-center cursor-grab active:cursor-grabbing",
-            "shadow-xl transition-colors duration-200 z-10",
-            "touch-none select-none", // Prevent default touch behaviors
+            "shadow-xl transition-colors duration-200 z-10 touch-none",
             isOnline 
               ? "bg-gradient-to-r from-green-500 to-emerald-500" 
               : "bg-gradient-to-r from-gray-600 to-gray-700"
           )}
-          whileTap={{ scale: 0.98 }} // Subtle tap effect
-          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
         >
           {isOnline ? (
             <Power className="w-6 h-6 text-white" />
@@ -190,7 +156,6 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
         </motion.div>
       </div>
 
-      {/* Status Indicator - Responsive */}
       <div className="flex items-center gap-2 text-xs sm:text-sm">
         <div className={cn(
           "w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full transition-colors duration-300",
@@ -206,4 +171,3 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
     </motion.div>
   )
 }
-

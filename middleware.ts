@@ -29,21 +29,21 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // This refreshes the session if it's expired - crucial for mobile
+  // Critical for session refreshing in Middleware
   const { data: { user } } = await supabase.auth.getUser()
   
-  // LOGGING FOR VERCEL
-  console.log(`[Middleware] Path: ${request.nextUrl.pathname} | User ID: ${user?.id} | Email: ${user?.email}`)
-
   const { pathname } = request.nextUrl
 
-  // Helper to handle redirects while preserving cookies and headers
+  // LOGGING FOR VERCEL
+  console.log(`[Middleware] Path: ${pathname} | User ID: ${user?.id || 'none'}`)
+
+  // Helper for strict redirects with cookie propagation
   const redirect = (path: string, reason: string) => {
     console.log(`[Middleware] Redirecting to ${path} | Reason: ${reason}`)
-    const redirectResponse = NextResponse.redirect(new URL(path, request.url))
+    const url = new URL(path, request.url)
+    const redirectResponse = NextResponse.redirect(url)
     
-    // Copy all headers from the current response to the redirect response
-    // This ensures cookies are propagated correctly
+    // Propagate all headers/cookies to the new response
     response.headers.forEach((value, key) => {
       redirectResponse.headers.set(key, value)
     })
@@ -51,76 +51,74 @@ export async function middleware(request: NextRequest) {
     return redirectResponse
   }
 
-  // Admin Fallback Logic (requested by user)
+  // Admin whitelist emails
   const isAdminEmail = user?.email === 'mamat.clutchy@gmail.com' || user?.email === 'matanel.clutchy@gmail.com'
 
-  // Protect driver routes
-  if (pathname.startsWith('/driver')) {
-    if (!user) return redirect('/login', 'No user session for driver route')
+  // Define route categories
+  const isDriverPath = pathname.startsWith('/driver')
+  const isAdminPath = pathname.startsWith('/admin')
+  const isOnboardingPath = pathname.startsWith('/onboarding')
+  const isLoginPath = pathname === '/login'
+
+  // 1. Authenticated User Protection
+  if (isDriverPath || isAdminPath || isOnboardingPath) {
+    if (!user) {
+      return redirect('/login', 'Unauthenticated access to protected route')
+    }
 
     const { data: profile, error } = await supabase
       .from('profiles')
-      .select('role, full_name')
+      .select('role, full_name, vehicle_number, car_type')
       .eq('id', user.id)
       .single()
 
     if (error || !profile) {
-      console.error(`[Middleware] Profile fetch error for driver:`, error)
-      return redirect('/login', 'Profile not found')
+      console.error(`[Middleware] Profile fetch error for ${user.id}:`, error)
+      return redirect('/login', 'Profile not found or fetch failed')
     }
 
-    // Onboarding Trigger: If no full_name, redirect to onboarding
-    if (!profile.full_name && !pathname.startsWith('/onboarding')) {
-      return redirect('/onboarding', 'Missing full_name, triggering onboarding')
+    // 2. Strict Role-Based Access Control (RBAC)
+    if (isAdminPath && profile.role !== 'admin' && !isAdminEmail) {
+      return redirect('/login', 'Non-admin attempt to access /admin')
     }
 
-    if (profile.role !== 'driver' && !isAdminEmail) {
-      console.log(`[Middleware] Role mismatch: expected driver, got ${profile.role}`)
-      return redirect('/login', 'Unauthorized driver access')
+    if (isDriverPath && profile.role !== 'driver' && !isAdminEmail) {
+      return redirect('/login', 'Unauthorized access to /driver')
     }
-  }
 
-  // Protect admin routes
-  if (pathname.startsWith('/admin')) {
-    if (!user) return redirect('/login', 'No user session for admin route')
-
-    // Force admin role for the user's specific email if DB query fails or role is wrong
-    if (isAdminEmail) {
-      console.log(`[Middleware] Admin bypass triggered for: ${user.email}`)
-    } else {
-      const { data: profile, error } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', user.id)
-        .single()
-
-      if (error || !profile) {
-        console.error(`[Middleware] Profile fetch error for admin:`, error)
-        return redirect('/login', 'Profile not found')
+    // 3. Driver Onboarding Guard
+    if (profile.role === 'driver' && !isAdminEmail) {
+      const isIncomplete = !profile.full_name || !profile.vehicle_number || !profile.car_type
+      
+      if (isIncomplete && !isOnboardingPath) {
+        return redirect('/onboarding', 'Driver profile incomplete, forcing onboarding')
       }
-
-      if (profile.role !== 'admin') {
-        console.log(`[Middleware] Role mismatch: expected admin, got ${profile.role}`)
-        return redirect('/login', 'Unauthorized admin access')
+      
+      if (!isIncomplete && isOnboardingPath) {
+        return redirect('/driver/dashboard', 'Profile complete, skipping onboarding')
       }
     }
   }
 
-  // Redirect authenticated users away from login
-  if (pathname === '/login' && user) {
-    if (isAdminEmail) return redirect('/admin/dashboard', 'Admin bypass redirect')
-
+  // 4. Redirect logged-in users away from Login page
+  if (isLoginPath && user) {
     const { data: profile } = await supabase
       .from('profiles')
-      .select('role, full_name')
+      .select('role, full_name, vehicle_number, car_type')
       .eq('id', user.id)
       .single()
 
-    if (profile?.role === 'driver') {
-      if (!profile.full_name) return redirect('/onboarding', 'Driver missing name on login')
-      return redirect('/driver/dashboard', 'Authenticated driver on login page')
-    } else if (profile?.role === 'admin') {
-      return redirect('/admin/dashboard', 'Authenticated admin on login page')
+    if (profile) {
+      if (profile.role === 'admin' || isAdminEmail) {
+        return redirect('/admin/dashboard', 'Authenticated admin on /login')
+      }
+      
+      const isIncomplete = !profile.full_name || !profile.vehicle_number || !profile.car_type
+      if (isIncomplete) {
+        return redirect('/onboarding', 'Incomplete driver profile on /login')
+      }
+      
+      return redirect('/driver/dashboard', 'Authenticated driver on /login')
     }
   }
 
@@ -132,5 +130,3 @@ export const config = {
     '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }
-
-
