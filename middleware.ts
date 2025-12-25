@@ -27,49 +27,56 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // Do not use supabase.auth.getUser() here if possible, as it adds overhead.
-  // However, for route protection, we need the user object.
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  // This refreshes the session if it's expired - crucial for mobile
+  const { data: { user } } = await supabase.auth.getUser()
+  
+  // LOGGING FOR VERCEL
+  console.log(`[Middleware] Path: ${request.nextUrl.pathname} | User exists: ${!!user}`)
 
   const { pathname } = request.nextUrl
 
+  // Helper to handle redirects while preserving cookies
+  const redirect = (path: string) => {
+    const response = NextResponse.redirect(new URL(path, request.url))
+    // Copy cookies from supabaseResponse to the redirect response
+    supabaseResponse.cookies.getAll().forEach(cookie => {
+      response.cookies.set(cookie.name, cookie.value, {
+        path: cookie.path,
+        domain: cookie.domain,
+        maxAge: cookie.maxAge,
+        expires: cookie.expires,
+        secure: cookie.secure,
+        httpOnly: cookie.httpOnly,
+        sameSite: cookie.sameSite,
+      })
+    })
+    return response
+  }
+
   // Protect driver routes
   if (pathname.startsWith('/driver')) {
-    if (!user) {
-      return NextResponse.redirect(new URL('/login', request.url))
-    }
+    if (!user) return redirect('/login')
 
-    // Check user role - this requires a DB query, which is slow in middleware.
-    // In production, consider using custom claims in the JWT.
     const { data: profile } = await supabase
       .from('profiles')
       .select('role')
       .eq('id', user.id)
       .single()
 
-    if (profile?.role !== 'driver') {
-      return NextResponse.redirect(new URL('/login', request.url))
-    }
+    if (profile?.role !== 'driver') return redirect('/login')
   }
 
   // Protect admin routes
   if (pathname.startsWith('/admin')) {
-    if (!user) {
-      return NextResponse.redirect(new URL('/login', request.url))
-    }
+    if (!user) return redirect('/login')
 
-    // Check user role
     const { data: profile } = await supabase
       .from('profiles')
       .select('role')
       .eq('id', user.id)
       .single()
 
-    if (profile?.role !== 'admin') {
-      return NextResponse.redirect(new URL('/login', request.url))
-    }
+    if (profile?.role !== 'admin') return redirect('/login')
   }
 
   // Redirect authenticated users away from login
@@ -80,11 +87,8 @@ export async function middleware(request: NextRequest) {
       .eq('id', user.id)
       .single()
 
-    if (profile?.role === 'driver') {
-      return NextResponse.redirect(new URL('/driver/dashboard', request.url))
-    } else if (profile?.role === 'admin') {
-      return NextResponse.redirect(new URL('/admin/dashboard', request.url))
-    }
+    if (profile?.role === 'driver') return redirect('/driver/dashboard')
+    if (profile?.role === 'admin') return redirect('/admin/dashboard')
   }
 
   return supabaseResponse
