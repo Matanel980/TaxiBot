@@ -495,20 +495,30 @@ export default function AdminDashboard() {
         </motion.div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-          <div className="glass-card rounded-2xl p-4 sm:p-6">
-            <h2 className="text-xl font-semibold mb-4 text-gray-900">מפה חיה</h2>
-            <div className="h-64 sm:h-96 rounded-lg overflow-hidden">
-              <AdminLiveMap 
-                drivers={data.drivers} 
-                zones={data.zones} 
-                presenceMap={presenceMap}
-                className="h-full w-full" 
-              />
-            </div>
+        <motion.div
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.1 }}
+          className="glass-card rounded-2xl p-4 sm:p-6"
+        >
+          <h2 className="text-xl font-semibold mb-4 text-gray-900">מפה חיה</h2>
+          <div className="h-64 sm:h-96 rounded-lg overflow-hidden border border-gray-100 shadow-inner">
+            <AdminLiveMap 
+              drivers={data.drivers} 
+              zones={data.zones} 
+              presenceMap={presenceMap}
+              className="h-full w-full" 
+            />
           </div>
-          <div className="glass-card rounded-2xl">
-            <DriverList drivers={data.drivers} />
-          </div>
+        </motion.div>
+        <motion.div
+          initial={{ opacity: 0, x: 20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.2 }}
+          className="glass-card rounded-2xl"
+        >
+          <DriverList drivers={data.drivers} />
+        </motion.div>
         </div>
       </div>
 

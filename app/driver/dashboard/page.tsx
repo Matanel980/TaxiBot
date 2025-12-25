@@ -10,6 +10,7 @@ import { QueueCard } from '@/components/driver/QueueCard'
 import { TripOverlay } from '@/components/driver/TripOverlay'
 import { ActiveTripView } from '@/components/driver/ActiveTripView'
 import { DriverMap } from '@/components/driver/DriverMap'
+import { OnboardingFlow } from '@/components/driver/OnboardingFlow'
 import { Card, CardContent } from '@/components/ui/card'
 import { MapPin, Navigation, ChevronDown } from 'lucide-react'
 import type { Profile, Trip } from '@/lib/supabase'
@@ -17,12 +18,14 @@ import { motion } from 'framer-motion'
 
 export default function DriverDashboard() {
   const [profile, setProfile] = useState<Profile | null>(null)
-  const [isOnline, setIsOnline] = useState<boolean>(false) // Dedicated state for connection status
+  const [isOnline, setIsOnline] = useState<boolean>(false)
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null)
   const [loading, setLoading] = useState(true)
   const [toggling, setToggling] = useState(false)
   const [profileCardOpen, setProfileCardOpen] = useState(false)
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null)
+  const [showOnboarding, setShowOnboarding] = useState(false)
+  
   const supabase = createClient()
 
   const { queuePosition, totalInQueue } = useRealtimeQueue({
@@ -114,8 +117,14 @@ export default function DriverDashboard() {
           .single()
 
         if (data) {
-          setProfile(data as Profile)
-          setIsOnline(!!data.is_online) // Set local state from initial profile
+          const prof = data as Profile
+          setProfile(prof)
+          setIsOnline(!!prof.is_online)
+          
+          // Check if onboarding is needed (incomplete profile)
+          if (!prof.full_name || !prof.vehicle_number || !prof.car_type) {
+            setShowOnboarding(true)
+          }
         }
 
         // Check for active trip
@@ -226,6 +235,16 @@ export default function DriverDashboard() {
   if (activeTrip) {
     return (
       <div className="relative min-h-screen w-full overflow-hidden">
+        {showOnboarding && profile && (
+          <OnboardingFlow
+            userId={profile.id}
+            initialPhone={profile.phone}
+            onComplete={(updatedData) => {
+              setProfile(prev => prev ? { ...prev, ...updatedData } : null)
+              setShowOnboarding(false)
+            }}
+          />
+        )}
         <div className="fixed inset-0 z-0">
           <DriverMap userPosition={userPosition} />
         </div>
@@ -240,6 +259,16 @@ export default function DriverDashboard() {
 
   return (
     <div className="relative min-h-screen w-full overflow-hidden bg-gray-900">
+      {showOnboarding && profile && (
+        <OnboardingFlow
+          userId={profile.id}
+          initialPhone={profile.phone}
+          onComplete={(updatedData) => {
+            setProfile(prev => prev ? { ...prev, ...updatedData } : null)
+            setShowOnboarding(false)
+          }}
+        />
+      )}
       {/* Map Background - Fixed on mobile */}
       <div className="fixed inset-0 z-0">
         <DriverMap userPosition={userPosition} />

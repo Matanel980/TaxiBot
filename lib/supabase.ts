@@ -7,6 +7,7 @@ export interface Profile {
   role: 'driver' | 'admin'
   full_name: string
   vehicle_number?: string | null // Vehicle registration number
+  car_type?: string | null // Car model/type
   current_zone: string | null // uuid foreign key to zones
   is_online: boolean
   is_approved?: boolean // Driver approval status

@@ -33,10 +33,32 @@ body {
   text-align: right;
 }
 
+/* Native-app feel transitions */
+* {
+  -webkit-tap-highlight-color: transparent;
+  transition-property: background-color, border-color, color, fill, stroke, opacity, box-shadow, transform;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Optimization for elements that shouldn't have transitions or need specific ones */
+.no-transition, .no-transition * {
+  transition: none !important;
+}
+
+button, a, [role="button"] {
+  transition: transform 0.1s active, opacity 0.2s;
+}
+
+button:active, a:active, [role="button"]:active {
+  transform: scale(0.97);
+}
+
 /* Mobile PWA feel - allow scrolling */
 html, body {
   height: 100%;
   overflow: auto;
+  overscroll-behavior-y: none; /* Prevent pull-to-refresh on mobile */
 }
 
 #__next {

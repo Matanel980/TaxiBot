@@ -41,43 +41,40 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
     return Math.max(0, Math.min(latest, containerWidth - thumbWidth - 16))
   })
 
-  // Reset position when status changes externally (with debounce to prevent animation conflicts)
+  // Reset position when status changes externally
   useEffect(() => {
     if (!isDragging) {
-      // Use requestAnimationFrame to ensure smooth animation
-      requestAnimationFrame(() => {
-        const containerWidth = containerRef.current?.offsetWidth || 0
-        x.set(isOnline ? containerWidth - 96 : 0)
-      })
+      const containerWidth = containerRef.current?.offsetWidth || 0
+      const targetX = isOnline ? containerWidth - 96 - 16 : 0
+      x.set(targetX)
     }
   }, [isOnline, isDragging, x])
 
   const handleDragEnd = (event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
     setIsDragging(false)
     const containerWidth = containerRef.current?.offsetWidth || 0
-    const threshold = containerWidth * 0.35 // 35% threshold (much easier)
-    const velocityThreshold = 500 // Fast swipe velocity threshold
+    const maxDistance = containerWidth - 96 - 16
+    const threshold = maxDistance * 0.4 // 40% threshold for toggle
     
-    // Check velocity first - fast swipes trigger even with short distance
-    const isFastSwipe = Math.abs(info.velocity.x) > velocityThreshold
-    
-    // Determine if we should toggle based on distance OR velocity
-    const shouldGoOnline = !isOnline && (info.offset.x > threshold || (isFastSwipe && info.offset.x > 0))
-    const shouldGoOffline = isOnline && (info.offset.x < -threshold || (isFastSwipe && info.offset.x < 0))
-    
-    if (shouldGoOnline) {
-      // Swiped right enough or fast swipe - go online
-      onToggle(true)
-      // Animate to end position smoothly
-      x.set(containerWidth - 96)
-    } else if (shouldGoOffline) {
-      // Swiped left enough or fast swipe - go offline
-      onToggle(false)
-      // Animate to start position smoothly
-      x.set(0)
+    const velocity = info.velocity.x
+    const offset = info.offset.x
+
+    if (!isOnline) {
+      // Trying to go online (drag right)
+      if (offset > threshold || velocity > 500) {
+        onToggle(true)
+        x.set(maxDistance)
+      } else {
+        x.set(0)
+      }
     } else {
-      // Didn't swipe enough - snap back quickly with elasticity
-      x.set(isOnline ? containerWidth - 96 : 0)
+      // Trying to go offline (drag left)
+      if (offset < -threshold || velocity < -500) {
+        onToggle(false)
+        x.set(0)
+      } else {
+        x.set(maxDistance)
+      }
     }
   }
 
@@ -135,12 +132,13 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
         className={cn(
           "relative w-full h-16 sm:h-20 rounded-full overflow-hidden",
           "bg-gray-800 border-2 transition-colors duration-200",
-          "touch-manipulation", // Better touch handling on mobile
+          "touch-none select-none", // Prevent scroll and selection during swipe
+          "cursor-default",
           isOnline ? "border-green-500" : "border-gray-600"
         )}
       >
         {/* Background Text */}
-        <div className="absolute inset-0 flex items-center justify-center z-0">
+        <div className="absolute inset-0 flex items-center justify-center z-0 pointer-events-none">
           <span className={cn(
             "text-sm font-semibold transition-opacity duration-200",
             isOnline ? "text-green-400 opacity-100" : "text-gray-500 opacity-50"
@@ -151,7 +149,7 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
 
         {/* Enhanced Progress Indicator with Dynamic Intensity */}
         <motion.div
-          className="absolute inset-0 bg-green-500"
+          className="absolute inset-0 bg-green-500 pointer-events-none"
           style={{
             width: progressWidth,
             opacity: backgroundIntensity
@@ -161,25 +159,24 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
         {/* Swipeable Thumb - 1:1 Responsive */}
         <motion.div
           drag="x"
-          dragConstraints={{ left: 0, right: 0 }}
-          dragElastic={0.5}
+          dragConstraints={containerRef}
+          dragElastic={0.05}
           dragMomentum={false}
-          dragTransition={{ bounceStiffness: 600, bounceDamping: 20 }}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
           style={{ 
             x: isDragging ? swipeDistance : springDistance
           }}
           className={cn(
-            "absolute left-2 top-1 bottom-1 w-24 sm:w-20 h-[calc(100%-0.5rem)] rounded-full",
+            "absolute left-2 top-2 bottom-2 w-24 sm:w-20 h-[calc(100%-1rem)] rounded-full",
             "flex items-center justify-center cursor-grab active:cursor-grabbing",
             "shadow-xl transition-colors duration-200 z-10",
-            "touch-action-none", // Prevent default touch behaviors
+            "touch-none", // Prevent default touch behaviors
             isOnline 
               ? "bg-gradient-to-r from-green-500 to-emerald-500" 
               : "bg-gradient-to-r from-gray-600 to-gray-700"
           )}
-          whileTap={{ scale: 0.92 }}
+          whileTap={{ scale: 0.95 }}
           whileHover={{ scale: 1.02 }}
         >
           {isOnline ? (
