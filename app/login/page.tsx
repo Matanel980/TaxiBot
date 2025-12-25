@@ -111,43 +111,87 @@ export default function LoginPage() {
     setError(null)
 
     try {
+      console.log('[DEBUG] Verifying OTP for phone:', phone)
+      
       // Phone is already formatted from previous step
-      const { error } = await supabase.auth.verifyOtp({
+      const { data: verifyData, error: verifyError } = await supabase.auth.verifyOtp({
         phone: phone, // Already formatted
         token: otp,
         type: 'sms'
       })
 
-      if (error) throw error
+      console.log('[DEBUG] Verify OTP response:', { 
+        hasSession: !!verifyData?.session, 
+        hasUser: !!verifyData?.user,
+        userId: verifyData?.user?.id,
+        phone: verifyData?.user?.phone,
+        error: verifyError 
+      })
 
-      // Get user profile to determine role
-      const { data: { user } } = await supabase.auth.getUser()
+      if (verifyError) throw verifyError
+
+      // CRITICAL: Wait for session to fully propagate
+      await new Promise(resolve => setTimeout(resolve, 500))
+
+      // Get fresh session
+      const { data: { session } } = await supabase.auth.getSession()
+      console.log('[DEBUG] Session after verification:', { 
+        hasSession: !!session, 
+        userId: session?.user?.id,
+        phone: session?.user?.phone 
+      })
+
+      const user = verifyData.user || session?.user
       
       if (user) {
+        console.log('[DEBUG] User authenticated:', user.id, user.phone)
+        
+        // Admin whitelist phones - PRIORITY CHECK
+        const isAdminPhone = user.phone === '+972526099607' || user.phone === '972526099607'
+        const isDriverPhone = user.phone === '+972509800301' || user.phone === '972509800301'
+
+        if (isAdminPhone) {
+          console.log('[DEBUG] Admin phone detected, redirecting...')
+          alert('✅ התחברת בהצלחה כמנהל!')
+          window.location.replace('/admin/dashboard')
+          return
+        }
+        
+        if (isDriverPhone) {
+          console.log('[DEBUG] Driver phone detected, redirecting...')
+          alert('✅ התחברת בהצלחה כנהג!')
+          window.location.replace('/driver/dashboard')
+          return
+        }
+
+        // For non-test phones, check profile
         const { data: profile } = await supabase
           .from('profiles')
           .select('role, full_name, vehicle_number, car_type')
           .eq('id', user.id)
           .single()
 
-        // Admin whitelist phones
-        const isAdminPhone = user.phone === '+972526099607' || user.phone === '972526099607'
-        const isDriverPhone = user.phone === '+972509800301' || user.phone === '972509800301'
+        console.log('[DEBUG] Profile data:', profile)
 
-        if (profile?.role === 'admin' || isAdminPhone) {
-          window.location.href = '/admin/dashboard'
-        } else if (profile?.role === 'driver' || isDriverPhone) {
-          if (!profile?.full_name || !profile?.vehicle_number || !profile?.car_type) {
-            window.location.href = '/onboarding'
+        if (profile?.role === 'admin') {
+          alert('✅ התחברת בהצלחה!')
+          window.location.replace('/admin/dashboard')
+        } else if (profile?.role === 'driver') {
+          const isIncomplete = !profile?.full_name || !profile?.vehicle_number || !profile?.car_type
+          alert('✅ התחברת בהצלחה!')
+          if (isIncomplete) {
+            window.location.replace('/onboarding')
           } else {
-            window.location.href = '/driver/dashboard'
+            window.location.replace('/driver/dashboard')
           }
         } else {
           setError('לא נמצא תפקיד למשתמש זה')
         }
+      } else {
+        setError('שגיאה באימות - אנא נסה שוב')
       }
     } catch (err: any) {
-      console.error('OTP verification error:', err)
+      console.error('[ERROR] OTP verification failed:', err)
       setError(err.message || 'קוד אימות שגוי')
     } finally {
       setLoading(false)

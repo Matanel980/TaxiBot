@@ -30,12 +30,14 @@ export async function middleware(request: NextRequest) {
   )
 
   // Critical for session refreshing in Middleware
+  // EMERGENCY FIX: Explicitly get session before user to ensure SSR context is initialized
+  const { data: { session } } = await supabase.auth.getSession()
   const { data: { user } } = await supabase.auth.getUser()
   
   const { pathname } = request.nextUrl
 
   // LOGGING FOR VERCEL
-  console.log(`[Middleware] Path: ${pathname} | User ID: ${user?.id || 'none'} | Phone: ${user?.phone || 'none'}`)
+  console.log(`[Middleware] Path: ${pathname} | Session: ${session ? 'YES' : 'NO'} | User ID: ${user?.id || 'none'} | Phone: ${user?.phone || 'none'}`)
 
   // Helper for strict redirects with cookie propagation
   const redirect = (path: string, reason: string) => {
