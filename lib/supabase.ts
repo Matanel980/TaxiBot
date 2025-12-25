@@ -72,6 +72,11 @@ export function createClient() {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      auth: {
+        persistSession: true,
+        detectSessionInUrl: true,
+        flowType: 'pkce',
+      },
       cookieOptions: {
         name: 'sb-auth-token',
         sameSite: 'lax',

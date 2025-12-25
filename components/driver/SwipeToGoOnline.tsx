@@ -54,14 +54,14 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
     setIsDragging(false)
     const containerWidth = containerRef.current?.offsetWidth || 0
     const maxDistance = containerWidth - 96 - 16
-    const threshold = maxDistance * 0.4 // 40% threshold for toggle
+    const threshold = maxDistance * 0.3 // Even more sensitive (30%)
     
     const velocity = info.velocity.x
     const offset = info.offset.x
 
     if (!isOnline) {
       // Trying to go online (drag right)
-      if (offset > threshold || velocity > 500) {
+      if (offset > threshold || velocity > 300) { // Lower velocity threshold
         onToggle(true)
         x.set(maxDistance)
       } else {
@@ -69,7 +69,7 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
       }
     } else {
       // Trying to go offline (drag left)
-      if (offset < -threshold || velocity < -500) {
+      if (offset < -threshold || velocity < -300) { // Lower velocity threshold
         onToggle(false)
         x.set(0)
       } else {
@@ -81,6 +81,8 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
   const handleDragStart = () => {
     setIsDragging(true)
   }
+
+  // ... rest of the component
 
   // Calculate progress percentage for visual feedback (0-100%)
   const progressPercentage = useTransform(swipeDistance, (latest) => {
@@ -159,24 +161,25 @@ export function SwipeToGoOnline({ isOnline, onToggle, loading, driverName }: Swi
         {/* Swipeable Thumb - 1:1 Responsive */}
         <motion.div
           drag="x"
-          dragConstraints={containerRef}
-          dragElastic={0.05}
+          dragConstraints={{ left: 0, right: containerRef.current ? containerRef.current.offsetWidth - 96 - 16 : 0 }}
+          dragElastic={0} // No elasticity during drag for "native" feel
           dragMomentum={false}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
           style={{ 
-            x: isDragging ? swipeDistance : springDistance
+            x: isDragging ? swipeDistance : springDistance,
+            touchAction: 'none' // Inline safety
           }}
           className={cn(
             "absolute left-2 top-2 bottom-2 w-24 sm:w-20 h-[calc(100%-1rem)] rounded-full",
             "flex items-center justify-center cursor-grab active:cursor-grabbing",
             "shadow-xl transition-colors duration-200 z-10",
-            "touch-none", // Prevent default touch behaviors
+            "touch-none select-none", // Prevent default touch behaviors
             isOnline 
               ? "bg-gradient-to-r from-green-500 to-emerald-500" 
               : "bg-gradient-to-r from-gray-600 to-gray-700"
           )}
-          whileTap={{ scale: 0.95 }}
+          whileTap={{ scale: 0.98 }} // Subtle tap effect
           whileHover={{ scale: 1.02 }}
         >
           {isOnline ? (

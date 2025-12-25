@@ -131,9 +131,9 @@ export default function LoginPage() {
           .single()
 
         if (profile?.role === 'driver') {
-          router.push('/driver/dashboard')
+          window.location.href = '/driver/dashboard'
         } else if (profile?.role === 'admin') {
-          router.push('/admin/dashboard')
+          window.location.href = '/admin/dashboard'
         } else {
           setError('לא נמצא תפקיד למשתמש זה')
         }
