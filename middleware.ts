@@ -148,6 +148,21 @@ export async function middleware(request: NextRequest) {
     }
   }
 
+  // 5. Add cache-control headers for driver routes to prevent caching
+  if (isDriverPath || isOnboardingPath) {
+    response.headers.set('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate, proxy-revalidate')
+    response.headers.set('Pragma', 'no-cache')
+    response.headers.set('Expires', '0')
+    response.headers.set('X-Accel-Expires', '0') // Nginx cache control
+    response.headers.set('Surrogate-Control', 'no-store') // CDN cache control
+  }
+
+  // Also add cache headers for admin routes to ensure real-time updates
+  if (isAdminPath) {
+    response.headers.set('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate')
+    response.headers.set('Pragma', 'no-cache')
+  }
+
   return response
 }
 

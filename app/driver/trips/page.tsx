@@ -1,5 +1,8 @@
 'use client'
 
+// Force dynamic rendering - prevent static generation and caching
+export const dynamic = 'force-dynamic'
+
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase'
 import { Card, CardContent } from '@/components/ui/card'

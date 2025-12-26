@@ -1,6 +1,10 @@
 'use client'
 
+// Force dynamic rendering - prevent static generation and caching
+export const dynamic = 'force-dynamic'
+
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase'
 import { useGeolocation } from '@/lib/hooks/useGeolocation'
 import { useRealtimeQueue } from '@/lib/hooks/useRealtimeQueue'
@@ -28,6 +32,7 @@ export default function DriverDashboard() {
   const [showOnboarding, setShowOnboarding] = useState(false)
   
   const supabase = createClient()
+  const router = useRouter()
 
   const { queuePosition, totalInQueue } = useRealtimeQueue({
     zoneId: profile?.current_zone || null,
@@ -250,42 +255,9 @@ export default function DriverDashboard() {
 
       if (error) {
         console.error('[Driver Dashboard] Update error:', error)
-        if (error.code === 'PGRST116' || error.message?.includes('406')) {
-          console.error('[Driver Dashboard] 406 Error on update - Possible RLS policy blocking')
-          // Try without .select() as fallback
-          const { error: fallbackError } = await supabase
-            .from('profiles')
-            .update({ 
-              is_online: checked,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', profile.id)
-          
-          if (fallbackError) {
-            throw fallbackError
-          }
-        } else {
-          throw error
-        }
-      }
-
-      if (!error) {
-        // Only update profile if needed, avoiding a full re-render loop
-        setProfile(prev => prev ? { ...prev, is_online: checked } : null)
-        
-        // Log status change for debugging
-        if (checked) {
-          console.log('Driver went online - location updates started')
-        } else {
-          console.log('Driver went offline - location updates stopped')
-        }
-      } else {
-        console.error('Error updating online status:', error)
-        
-        // Handle 406 errors specifically
         if (error.code === 'PGRST116' || error.message?.includes('406') || error.message?.includes('Not Acceptable')) {
-          console.error('[Driver Toggle] 406 Error - RLS may be blocking. Attempting fallback...')
-          // Try update without select
+          console.error('[Driver Dashboard] 406 Error on update - Possible RLS policy blocking. Attempting fallback...')
+          // Try without .select() as fallback
           const { error: fallbackError } = await supabase
             .from('profiles')
             .update({ 
@@ -298,8 +270,8 @@ export default function DriverDashboard() {
             console.error('[Driver Toggle] Fallback also failed:', fallbackError)
             // Rollback on error
             setIsOnline(!checked)
-            // Show user-friendly error (you can add toast here if needed)
             alert('שגיאה בעדכון הסטטוס. נסה שוב.')
+            throw fallbackError
           } else {
             // Fallback succeeded
             setProfile(prev => prev ? { ...prev, is_online: checked } : null)
@@ -308,12 +280,28 @@ export default function DriverDashboard() {
             } else {
               console.log('Driver went offline (fallback) - location updates stopped')
             }
+            // Force client-side refresh to ensure UI updates
+            router.refresh()
           }
         } else {
           // Rollback on error
           setIsOnline(!checked)
           alert('שגיאה בעדכון הסטטוס. נסה שוב.')
+          throw error
         }
+      } else {
+        // Success - update profile state
+        setProfile(prev => prev ? { ...prev, is_online: checked } : null)
+        
+        // Log status change for debugging
+        if (checked) {
+          console.log('Driver went online - location updates started')
+        } else {
+          console.log('Driver went offline - location updates stopped')
+        }
+        
+        // Force client-side refresh to ensure UI updates
+        router.refresh()
       }
     } catch (err) {
       console.error('Unexpected error updating status:', err)
