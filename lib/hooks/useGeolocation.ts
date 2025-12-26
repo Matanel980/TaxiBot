@@ -109,10 +109,32 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
           .select('id, is_online, latitude, longitude, current_address, heading, updated_at')
 
         if (error) {
-          console.error('[Geolocation] Error details:', JSON.stringify(error, null, 2))
+          console.error('[Geolocation] ❌ Error updating location:', {
+            error: error.message,
+            code: error.code,
+            details: error.details,
+            hint: error.hint,
+            driverId,
+            latitude,
+            longitude
+          })
+          
+          // Check if it's an RLS policy issue
+          if (error.code === '42501' || error.message?.includes('permission denied') || error.message?.includes('policy')) {
+            console.error('[Geolocation] 🔒 RLS POLICY BLOCKING UPDATE - Driver may not have permission to update location')
+          }
+          
           lastPositionRef.current = null
         } else {
-          console.log('[Geolocation] Location updated successfully:', data?.[0])
+          console.log('[Geolocation] ✅ Location updated successfully and broadcast via Realtime:', {
+            driverId,
+            latitude,
+            longitude,
+            heading,
+            address,
+            timestamp: new Date().toISOString(),
+            data: data?.[0]
+          })
         }
       } catch (err) {
         console.error('[Geolocation] Unexpected error:', err)

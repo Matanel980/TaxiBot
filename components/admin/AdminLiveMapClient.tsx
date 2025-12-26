@@ -188,15 +188,56 @@ export function AdminLiveMapClient({
   // Drivers are now passed as props from the parent (which handles Realtime)
   const drivers = initialDrivers || []
 
-  // Debug: Log initial props
+  // Debug: Log initial props and driver location data
   useEffect(() => {
     console.log('[AdminMap] Component mounted with:', {
       driversCount: drivers.length,
       zonesCount: zones.length,
       isLoaded,
-      loadError: loadError?.message
+      loadError: loadError?.message,
+      onlineDrivers: drivers.filter(d => d.is_online).length,
+      driversWithLocation: drivers.filter(d => d.latitude && d.longitude).length
     })
+    
+    // Log sample driver data for debugging
+    if (drivers.length > 0) {
+      const sampleDriver = drivers.find(d => d.is_online && d.latitude && d.longitude)
+      if (sampleDriver) {
+        console.log('[AdminMap] Sample driver location:', {
+          id: sampleDriver.id,
+          name: sampleDriver.full_name,
+          lat: sampleDriver.latitude,
+          lng: sampleDriver.longitude,
+          is_online: sampleDriver.is_online,
+          updated_at: sampleDriver.updated_at
+        })
+      }
+    }
   }, [])
+  
+  // Debug: Log when drivers prop changes (from parent subscription)
+  useEffect(() => {
+    if (drivers.length > 0) {
+      const onlineWithLocation = drivers.filter(d => 
+        d.is_online && 
+        d.latitude && 
+        d.longitude &&
+        typeof d.latitude === 'number' &&
+        typeof d.longitude === 'number'
+      )
+      console.log('[AdminMap] Drivers prop updated:', {
+        total: drivers.length,
+        online: drivers.filter(d => d.is_online).length,
+        onlineWithLocation: onlineWithLocation.length,
+        sampleLocations: onlineWithLocation.slice(0, 3).map(d => ({
+          id: d.id,
+          name: d.full_name,
+          lat: d.latitude,
+          lng: d.longitude
+        }))
+      })
+    }
+  }, [drivers])
 
   // Track which drivers have active trips
   const driverIds = useMemo(() => drivers.map(d => d.id), [drivers])

@@ -280,12 +280,21 @@ export default function AdminDashboard() {
         (payload) => {
           if (!isMountedRef.current) return
           
-          // Only handle UPDATE events to avoid infinite loops
+          // Handle all UPDATE events (including location updates)
           if (payload.eventType === 'UPDATE' && payload.new) {
             const newDriver = payload.new as Profile
             
             // Debug logging for sync verification
-            console.log('[Realtime] Received PATCH for driver:', newDriver.id, 'Lat:', newDriver.latitude, 'Online:', newDriver.is_online)
+            console.log('[Realtime] ✅ Received UPDATE event for driver:', {
+              id: newDriver.id,
+              name: newDriver.full_name,
+              latitude: newDriver.latitude,
+              longitude: newDriver.longitude,
+              is_online: newDriver.is_online,
+              heading: newDriver.heading,
+              eventType: payload.eventType,
+              timestamp: new Date().toISOString()
+            })
             
             // Verify role filter
             if (newDriver.role !== 'driver') {
@@ -316,12 +325,37 @@ export default function AdminDashboard() {
                 }
               }
               
+              // Log location updates for debugging
+              if (oldDriver && (
+                oldDriver.latitude !== newDriver.latitude || 
+                oldDriver.longitude !== newDriver.longitude
+              )) {
+                console.log('[Realtime] 📍 Location update received:', {
+                  driverId: newDriver.id,
+                  name: newDriver.full_name,
+                  oldLat: oldDriver.latitude,
+                  newLat: newDriver.latitude,
+                  oldLng: oldDriver.longitude,
+                  newLng: newDriver.longitude,
+                  timestamp: new Date().toISOString()
+                })
+              }
+              
               // Patch the specific driver in the existing array - No delays
+              const updatedDrivers = prev.drivers.map(d =>
+                d.id === payload.new.id ? { ...d, ...payload.new } as Profile : d
+              )
+              
+              // If driver not found in array, add them (for new drivers coming online)
+              const driverExists = updatedDrivers.some(d => d.id === payload.new.id)
+              if (!driverExists && newDriver.is_online) {
+                console.log('[Realtime] ➕ Adding new driver to array:', newDriver.id, newDriver.full_name)
+                updatedDrivers.push(newDriver as Profile)
+              }
+              
               return {
                 ...prev,
-                drivers: prev.drivers.map(d =>
-                  d.id === payload.new.id ? { ...d, ...payload.new } as Profile : d
-                ),
+                drivers: updatedDrivers,
               }
             })
           } else if (payload.eventType === 'INSERT' || payload.eventType === 'DELETE') {
