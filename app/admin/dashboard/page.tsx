@@ -267,6 +267,8 @@ export default function AdminDashboard() {
     fetchData(isMountedRef)
 
     // Subscribe to real-time updates with error handling
+    // NOTE: Removed filter='role=eq.driver' because enum types don't work well with Realtime filters
+    // Instead, we filter in the callback to ensure we only process driver updates
     const driversChannel = supabase
       .channel('admin-dashboard-drivers')
       .on(
@@ -274,8 +276,8 @@ export default function AdminDashboard() {
         {
           event: '*',
           schema: 'public',
-          table: 'profiles',
-          filter: 'role=eq.driver'
+          table: 'profiles'
+          // Removed filter - enum types cause issues with Realtime filters
         },
         (payload) => {
           if (!isMountedRef.current) return
@@ -283,6 +285,12 @@ export default function AdminDashboard() {
           // Handle all UPDATE events (including location updates)
           if (payload.eventType === 'UPDATE' && payload.new) {
             const newDriver = payload.new as Profile
+            
+            // CRITICAL: Filter by role in callback (enum types don't work in Realtime filters)
+            if (newDriver.role !== 'driver') {
+              // Silently ignore non-driver updates
+              return
+            }
             
             // Debug logging for sync verification
             console.log('[Realtime] ✅ Received UPDATE event for driver:', {
@@ -295,12 +303,6 @@ export default function AdminDashboard() {
               eventType: payload.eventType,
               timestamp: new Date().toISOString()
             })
-            
-            // Verify role filter
-            if (newDriver.role !== 'driver') {
-              console.warn('[Admin Dashboard] Received update for non-driver:', newDriver.id)
-              return
-            }
             
             // Use functional update to access current state
             setData(prev => {

@@ -185,8 +185,16 @@ export function AdminLiveMapClient({
   const isInitialMountRef = useRef(true)
   const supabase = createClient()
 
-  // Drivers are now passed as props from the parent (which handles Realtime)
-  const drivers = initialDrivers || []
+  // CRITICAL: Use state to ensure reactivity to prop changes
+  // This ensures the component re-renders when parent updates drivers array
+  const [drivers, setDrivers] = useState<Profile[]>(initialDrivers || [])
+  
+  // Update drivers state when prop changes (from parent Realtime subscription)
+  useEffect(() => {
+    if (initialDrivers) {
+      setDrivers(initialDrivers)
+    }
+  }, [initialDrivers])
 
   // Debug: Log initial props and driver location data
   useEffect(() => {
@@ -215,7 +223,7 @@ export function AdminLiveMapClient({
     }
   }, [])
   
-  // Debug: Log when drivers prop changes (from parent subscription)
+  // Debug: Log when drivers state changes (from parent subscription)
   useEffect(() => {
     if (drivers.length > 0) {
       const onlineWithLocation = drivers.filter(d => 
@@ -225,7 +233,7 @@ export function AdminLiveMapClient({
         typeof d.latitude === 'number' &&
         typeof d.longitude === 'number'
       )
-      console.log('[AdminMap] Drivers prop updated:', {
+      console.log('[AdminMap] 🔄 Drivers state updated:', {
         total: drivers.length,
         online: drivers.filter(d => d.is_online).length,
         onlineWithLocation: onlineWithLocation.length,
@@ -233,9 +241,12 @@ export function AdminLiveMapClient({
           id: d.id,
           name: d.full_name,
           lat: d.latitude,
-          lng: d.longitude
+          lng: d.longitude,
+          updated_at: d.updated_at
         }))
       })
+    } else {
+      console.log('[AdminMap] Drivers state is empty')
     }
   }, [drivers])
 
