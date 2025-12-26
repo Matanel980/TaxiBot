@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
 
     let query = supabase
       .from('trips')
-      .select('*', { count: 'exact' })
+      .select('id, customer_phone, pickup_address, destination_address, status, driver_id, created_at, updated_at', { count: 'exact' })
 
     // Apply filters
     if (status) {

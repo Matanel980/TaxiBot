@@ -13,8 +13,35 @@ export function MobileDrawer() {
   const supabase = createClient()
 
   const handleLogout = async () => {
-    await supabase.auth.signOut()
-    router.push('/login')
+    try {
+      // CRITICAL: Set is_online to false before signing out (for admin, though less critical)
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        await supabase
+          .from('profiles')
+          .update({ 
+            is_online: false,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', user.id)
+      }
+      
+      // Clear Supabase session
+      await supabase.auth.signOut()
+      
+      // Clear all localStorage
+      if (typeof window !== 'undefined') {
+        localStorage.clear()
+        sessionStorage.clear()
+      }
+      
+      // Hard redirect to login (prevents back-button navigation)
+      window.location.replace('/login')
+    } catch (error) {
+      console.error('Logout error:', error)
+      // Force redirect even if signOut fails
+      window.location.replace('/login')
+    }
   }
 
   return (

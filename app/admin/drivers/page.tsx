@@ -202,14 +202,20 @@ export default function AdminDriversPage() {
     setEditingDriver(newDriver as Profile)
   }
 
-  const handleSaveDriver = async (driverId: string, data: { full_name: string; phone: string; email?: string; password?: string; vehicle_number?: string; is_approved: boolean }) => {
+  const handleSaveDriver = async (driverId: string, data: { full_name: string; phone: string; vehicle_number?: string; car_type?: string; is_approved: boolean }) => {
     if (driverId === 'new') {
-      // Create new driver via API (with email/password)
+      // Create new driver via API (profile-only, no auth user)
       try {
         const response = await fetch('/api/drivers/create', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data)
+          body: JSON.stringify({
+            full_name: data.full_name,
+            phone: data.phone,
+            vehicle_number: data.vehicle_number,
+            car_type: data.car_type,
+            is_approved: data.is_approved
+          })
         })
 
         const result = await response.json()
@@ -218,7 +224,16 @@ export default function AdminDriversPage() {
           throw new Error(result.error || 'שגיאה ביצירת נהג')
         }
 
-        setDrivers(prev => [...prev, result.data as Profile])
+        // Refresh drivers list to get the new driver
+        const { data: driversData } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('role', 'driver')
+
+        if (driversData) {
+          setDrivers(driversData as Profile[])
+        }
+
         setEditingDriver(null)
       } catch (error: any) {
         console.error('Error creating driver:', error)

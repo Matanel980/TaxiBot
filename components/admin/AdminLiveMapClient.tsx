@@ -126,6 +126,12 @@ const DriverMarker = React.memo(({
 
   if (!driver.latitude || !driver.longitude) return null
 
+  // Guard: Ensure google is available
+  if (!google || !google.maps) {
+    console.error('[DriverMarker] Google Maps API not available')
+    return null
+  }
+
   // Determine status for icon
   let status: 'available' | 'on-trip' | 'offline' = 'offline'
   if (driver.is_online) {
@@ -169,7 +175,7 @@ export function AdminLiveMapClient({
   zones: initialZones = [],
   presenceMap = {}
 }: AdminLiveMapClientProps) {
-  const { isLoaded } = useJsApiLoader(GOOGLE_MAPS_LOADER_OPTIONS)
+  const { isLoaded, loadError } = useJsApiLoader(GOOGLE_MAPS_LOADER_OPTIONS)
 
   // Use props as single source of truth - remove internal Realtime subscription
   const [zones, setZones] = useState<ZonePostGIS[]>(initialZones)
@@ -180,7 +186,17 @@ export function AdminLiveMapClient({
   const supabase = createClient()
 
   // Drivers are now passed as props from the parent (which handles Realtime)
-  const drivers = initialDrivers
+  const drivers = initialDrivers || []
+
+  // Debug: Log initial props
+  useEffect(() => {
+    console.log('[AdminMap] Component mounted with:', {
+      driversCount: drivers.length,
+      zonesCount: zones.length,
+      isLoaded,
+      loadError: loadError?.message
+    })
+  }, [])
 
   // Track which drivers have active trips
   const driverIds = useMemo(() => drivers.map(d => d.id), [drivers])
@@ -293,11 +309,33 @@ export function AdminLiveMapClient({
     return () => clearTimeout(zoneCheckTimeout)
   }, [drivers, zones, isLoaded, supabase])
 
-  // Memoize online drivers
+  // Memoize online drivers with validation
   const onlineDrivers = useMemo(() => {
-    return drivers.filter(
-      d => d.is_online && d.role === 'driver' && d.latitude && d.longitude
-    )
+    const valid = drivers.filter(d => {
+      const isValid = d.is_online && 
+                      d.role === 'driver' && 
+                      typeof d.latitude === 'number' && 
+                      typeof d.longitude === 'number' &&
+                      !isNaN(d.latitude) && 
+                      !isNaN(d.longitude) &&
+                      d.latitude >= -90 && d.latitude <= 90 &&
+                      d.longitude >= -180 && d.longitude <= 180
+      
+      if (!isValid && d.is_online) {
+        console.warn('[AdminMap] Invalid driver coordinates:', {
+          id: d.id,
+          name: d.full_name,
+          lat: d.latitude,
+          lng: d.longitude,
+          is_online: d.is_online
+        })
+      }
+      
+      return isValid
+    })
+    
+    console.log('[AdminMap] Valid online drivers:', valid.length, 'out of', drivers.length)
+    return valid
   }, [drivers])
 
   // Create stable drivers key for comparison
@@ -309,6 +347,7 @@ export function AdminLiveMapClient({
   const mapOptions = useMemo<google.maps.MapOptions>(() => {
     // Check if google is available
     if (typeof window === 'undefined' || !window.google?.maps) {
+      console.warn('[AdminMap] Google Maps API not available, using fallback options')
       return {
         disableDefaultUI: false,
         styles: silverMapStyle,
@@ -318,46 +357,54 @@ export function AdminLiveMapClient({
       }
     }
 
-    return {
-      disableDefaultUI: false,
-      zoomControl: true,
-      zoomControlOptions: {
-        position: window.google.maps.ControlPosition.RIGHT_BOTTOM,
-      },
-      streetViewControl: true,
-      streetViewControlOptions: {
-        position: window.google.maps.ControlPosition.RIGHT_BOTTOM,
-      },
-      mapTypeControl: false,
-      fullscreenControl: true,
-      fullscreenControlOptions: {
-        position: window.google.maps.ControlPosition.LEFT_TOP,
-      },
-      styles: silverMapStyle,
-      center: ACRE_CENTER,
-      zoom: 13,
-      gestureHandling: 'greedy',
+    try {
+      return {
+        disableDefaultUI: false,
+        zoomControl: true,
+        zoomControlOptions: {
+          position: window.google.maps.ControlPosition.RIGHT_BOTTOM,
+        },
+        streetViewControl: true,
+        streetViewControlOptions: {
+          position: window.google.maps.ControlPosition.RIGHT_BOTTOM,
+        },
+        mapTypeControl: false,
+        fullscreenControl: true,
+        fullscreenControlOptions: {
+          position: window.google.maps.ControlPosition.LEFT_TOP,
+        },
+        styles: silverMapStyle,
+        center: ACRE_CENTER,
+        zoom: 13,
+        gestureHandling: 'greedy',
+      }
+    } catch (error) {
+      console.error('[AdminMap] Error creating map options:', error)
+      return {
+        disableDefaultUI: false,
+        styles: silverMapStyle,
+        center: ACRE_CENTER,
+        zoom: 13,
+        gestureHandling: 'greedy',
+      }
     }
   }, [isLoaded])
 
-  // Create taxi icons for each driver based on their status
-  const driverIcons = useMemo(() => {
-    if (typeof window === 'undefined' || !window.google) return new Map()
-    
-    const icons = new Map<string, google.maps.Icon>()
-    drivers.forEach(driver => {
-      let status: 'available' | 'on-trip' | 'offline' = 'offline'
-      
-      if (driver.is_online) {
-        // Check if driver has an active trip
-        const hasActiveTrip = driverTrips[driver.id]?.hasActiveTrip || false
-        status = hasActiveTrip ? 'on-trip' : 'available'
-      }
-      
-      icons.set(driver.id, createTaxiIcon(status, window.google))
-    })
-    return icons
-  }, [drivers, driverTrips])
+  // Debug: Log Google Maps loading status
+  useEffect(() => {
+    console.log('[AdminMap] Google Maps loaded:', isLoaded)
+    console.log('[AdminMap] window.google available:', typeof window !== 'undefined' && !!window.google)
+    console.log('[AdminMap] Drivers count:', drivers.length)
+    console.log('[AdminMap] Online drivers:', onlineDrivers.length)
+    if (onlineDrivers.length > 0) {
+      console.log('[AdminMap] Sample driver data:', {
+        id: onlineDrivers[0].id,
+        lat: onlineDrivers[0].latitude,
+        lng: onlineDrivers[0].longitude,
+        is_online: onlineDrivers[0].is_online
+      })
+    }
+  }, [isLoaded, drivers.length, onlineDrivers.length])
 
   // Update map bounds when drivers change
   useEffect(() => {
@@ -413,7 +460,43 @@ export function AdminLiveMapClient({
     mapRef.current = null
   }, [])
 
+  if (loadError) {
+    console.error('[AdminMap] Google Maps load error:', loadError)
+    return (
+      <div className="h-full w-full bg-red-50 flex items-center justify-center">
+        <div className="text-center p-6">
+          <p className="text-red-600 font-medium mb-2">שגיאה בטעינת המפה</p>
+          <p className="text-sm text-red-500">{loadError.message}</p>
+          <p className="text-xs text-gray-500 mt-4">
+            API Key: {process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ? 'מוגדר' : 'חסר'}
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   if (!isLoaded) {
+    return (
+      <div className="h-full w-full bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
+        <div className="text-center">
+          <div className="relative w-20 h-20 mx-auto mb-4">
+            <div className="absolute inset-0 animate-spin">
+              <svg className="w-full h-full text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" strokeWidth="2" strokeDasharray="3 3" opacity="0.3" />
+              </svg>
+            </div>
+            <div className="absolute inset-0 flex items-center justify-center text-4xl">
+              🚕
+            </div>
+          </div>
+          <p className="text-gray-700 font-medium">טוען מפה...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Final safety check before rendering map
+  if (!isLoaded || typeof window === 'undefined' || !window.google) {
     return (
       <div className="h-full w-full bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
         <div className="text-center">
@@ -446,9 +529,17 @@ export function AdminLiveMapClient({
           <ZonePolygon key={zone.id} zone={zone} />
         ))}
 
-        {/* Render driver markers */}
-        {drivers.map((driver) => {
-          if (!driver.latitude || !driver.longitude) return null
+        {/* Render driver markers - only when Google Maps is fully loaded */}
+        {isLoaded && typeof window !== 'undefined' && window.google && drivers.map((driver) => {
+          if (!driver.latitude || !driver.longitude) {
+            console.log('[AdminMap] Skipping driver without coordinates:', driver.id, driver.full_name)
+            return null
+          }
+          
+          if (!driver.is_online) {
+            console.log('[AdminMap] Skipping offline driver:', driver.id, driver.full_name)
+            return null
+          }
           
           return (
             <DriverMarker

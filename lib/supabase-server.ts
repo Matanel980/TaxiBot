@@ -86,12 +86,17 @@ export async function getDriverQueuePosition(zoneId: string, driverId: string) {
 export async function getActiveTrips(driverId: string) {
   const supabase = await createServerSupabaseClient()
   
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('trips')
-    .select('*')
+    .select('id, customer_phone, pickup_address, destination_address, status, driver_id, created_at, updated_at')
     .eq('driver_id', driverId)
     .in('status', ['pending', 'active'])
     .order('created_at', { ascending: false })
+  
+  if (error) {
+    console.error('[getDriverTrips] Error:', error)
+    return []
+  }
   
   return data || []
 }
@@ -99,11 +104,16 @@ export async function getActiveTrips(driverId: string) {
 export async function getPendingTrips() {
   const supabase = await createServerSupabaseClient()
   
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('trips')
-    .select('*')
+    .select('id, customer_phone, pickup_address, destination_address, status, driver_id, created_at, updated_at')
     .eq('status', 'pending')
     .order('created_at', { ascending: true })
+  
+  if (error) {
+    console.error('[getPendingTrips] Error:', error)
+    return []
+  }
   
   return data || []
 }

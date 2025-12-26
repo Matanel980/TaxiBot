@@ -22,6 +22,7 @@ export default function DriverDashboard() {
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null)
   const [loading, setLoading] = useState(true)
   const [toggling, setToggling] = useState(false)
+  const [isTogglingRef, setIsTogglingRef] = useState(false) // Add ref to track toggle in progress
   const [profileCardOpen, setProfileCardOpen] = useState(false)
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null)
   const [showOnboarding, setShowOnboarding] = useState(false)
@@ -110,11 +111,18 @@ export default function DriverDashboard() {
       const { data: { user } } = await supabase.auth.getUser()
       
       if (user) {
-        const { data } = await supabase
+        const { data, error: profileError } = await supabase
           .from('profiles')
-          .select('*')
+          .select('id, phone, role, full_name, vehicle_number, car_type, current_zone, is_online, is_approved, latitude, longitude, current_address, heading, updated_at')
           .eq('id', user.id)
           .single()
+
+        if (profileError) {
+          console.error('[Driver Dashboard] Profile fetch error:', profileError)
+          if (profileError.code === 'PGRST116' || profileError.message?.includes('406')) {
+            console.error('[Driver Dashboard] 406 Error - Possible RLS or schema issue')
+          }
+        }
 
         if (data) {
           const prof = data as Profile
@@ -127,42 +135,139 @@ export default function DriverDashboard() {
           }
         }
 
-        // Check for active trip
-        const { data: trip } = await supabase
-          .from('trips')
-          .select('*')
-          .eq('driver_id', user.id)
-          .eq('status', 'active')
-          .single()
+        // Check for active trip - wrapped in try-catch to prevent UI crash
+        try {
+          const { data: trip, error: tripError } = await supabase
+            .from('trips')
+            .select('id, customer_phone, pickup_address, destination_address, status, driver_id, created_at, updated_at')
+            .eq('driver_id', user.id)
+            .eq('status', 'active')
+            .maybeSingle() // Use maybeSingle instead of single to handle no rows gracefully
 
-        if (trip) {
-          setActiveTrip(trip as Trip)
+          if (tripError) {
+            // Handle 406 errors specifically
+            if (tripError.code === 'PGRST116') {
+              // No active trip found - this is normal, not an error
+              setActiveTrip(null)
+            } else if (tripError.message?.includes('406') || tripError.message?.includes('Not Acceptable')) {
+              console.error('[Driver Dashboard] 406 Error on trip fetch - Possible RLS or schema issue')
+              // Try fallback with minimal columns
+              const { data: fallbackTrip } = await supabase
+                .from('trips')
+                .select('id, status, driver_id')
+                .eq('driver_id', user.id)
+                .eq('status', 'active')
+                .maybeSingle()
+              
+              if (fallbackTrip) {
+                // Map fallback to full Trip type
+                setActiveTrip({
+                  ...fallbackTrip,
+                  customer_phone: '',
+                  pickup_address: '',
+                  destination_address: '',
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString()
+                } as Trip)
+              } else {
+                setActiveTrip(null)
+              }
+            } else {
+              console.error('[Driver Dashboard] Trip fetch error:', tripError)
+              setActiveTrip(null)
+            }
+          } else if (trip) {
+            setActiveTrip(trip as Trip)
+          } else {
+            setActiveTrip(null)
+          }
+        } catch (err) {
+          console.error('[Driver Dashboard] Unexpected error fetching trip:', err)
+          setActiveTrip(null)
+          // Don't block UI rendering - continue even if trip fetch fails
         }
       }
       
+      // CRITICAL: Always set loading to false, even if there were errors
       setLoading(false)
     }
 
     fetchProfile()
-  }, [supabase])
+
+    // Real-time subscription for profile updates (e.g., is_online changes from admin)
+    if (profile?.id) {
+      const channel = supabase
+        .channel(`profile-updates-${profile.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'profiles',
+            filter: `id=eq.${profile.id}`
+          },
+          (payload) => {
+            // CRITICAL: Ignore real-time updates during toggle to prevent race condition
+            if (isTogglingRef) {
+              console.log('[Real-time] Ignoring update during toggle operation')
+              return
+            }
+            
+            console.log('[Real-time] Profile updated:', payload.new)
+            const updated = payload.new as Profile
+            setProfile(updated)
+            setIsOnline(!!updated.is_online)
+          }
+        )
+        .subscribe()
+
+      return () => {
+        supabase.removeChannel(channel)
+      }
+    }
+  }, [supabase, profile?.id, isTogglingRef])
 
   const handleToggleOnline = async (checked: boolean) => {
     if (!profile) return
     
     // Update local state IMMEDIATELY for snappy UI response
     setIsOnline(checked)
+    setIsTogglingRef(true) // CRITICAL: Set flag to ignore real-time updates
     console.log('[Connection] Toggle changed to:', checked)
     
     setToggling(true)
     try {
-      // Update is_online status
-      const { error } = await supabase
+      // Update is_online status with explicit column selection
+      const { error, data: updateData } = await supabase
         .from('profiles')
         .update({ 
           is_online: checked,
           updated_at: new Date().toISOString()
         })
         .eq('id', profile.id)
+        .select('id, is_online, updated_at')
+        .single()
+
+      if (error) {
+        console.error('[Driver Dashboard] Update error:', error)
+        if (error.code === 'PGRST116' || error.message?.includes('406')) {
+          console.error('[Driver Dashboard] 406 Error on update - Possible RLS policy blocking')
+          // Try without .select() as fallback
+          const { error: fallbackError } = await supabase
+            .from('profiles')
+            .update({ 
+              is_online: checked,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', profile.id)
+          
+          if (fallbackError) {
+            throw fallbackError
+          }
+        } else {
+          throw error
+        }
+      }
 
       if (!error) {
         // Only update profile if needed, avoiding a full re-render loop
@@ -176,14 +281,49 @@ export default function DriverDashboard() {
         }
       } else {
         console.error('Error updating online status:', error)
-        // Rollback on error
-        setIsOnline(!checked)
+        
+        // Handle 406 errors specifically
+        if (error.code === 'PGRST116' || error.message?.includes('406') || error.message?.includes('Not Acceptable')) {
+          console.error('[Driver Toggle] 406 Error - RLS may be blocking. Attempting fallback...')
+          // Try update without select
+          const { error: fallbackError } = await supabase
+            .from('profiles')
+            .update({ 
+              is_online: checked,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', profile.id)
+          
+          if (fallbackError) {
+            console.error('[Driver Toggle] Fallback also failed:', fallbackError)
+            // Rollback on error
+            setIsOnline(!checked)
+            // Show user-friendly error (you can add toast here if needed)
+            alert('שגיאה בעדכון הסטטוס. נסה שוב.')
+          } else {
+            // Fallback succeeded
+            setProfile(prev => prev ? { ...prev, is_online: checked } : null)
+            if (checked) {
+              console.log('Driver went online (fallback) - location updates started')
+            } else {
+              console.log('Driver went offline (fallback) - location updates stopped')
+            }
+          }
+        } else {
+          // Rollback on error
+          setIsOnline(!checked)
+          alert('שגיאה בעדכון הסטטוס. נסה שוב.')
+        }
       }
     } catch (err) {
       console.error('Unexpected error updating status:', err)
       setIsOnline(!checked)
     } finally {
       setToggling(false)
+      // CRITICAL: Clear toggle flag after a short delay to allow DB update to propagate
+      setTimeout(() => {
+        setIsTogglingRef(false)
+      }, 1000) // 1 second grace period
     }
   }
 

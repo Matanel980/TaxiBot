@@ -17,12 +17,41 @@ export default function DriverTripsPage() {
       const { data: { user } } = await supabase.auth.getUser()
       
       if (user) {
-        const { data } = await supabase
+        const { data, error: tripsError } = await supabase
           .from('trips')
-          .select('*')
+          .select('id, customer_phone, pickup_address, destination_address, status, driver_id, created_at, updated_at')
           .eq('driver_id', user.id)
           .order('created_at', { ascending: false })
           .limit(20)
+
+        if (tripsError) {
+          console.error('[Driver Trips] Error fetching trips:', tripsError)
+          if (tripsError.message?.includes('406') || tripsError.message?.includes('Not Acceptable')) {
+            console.error('[Driver Trips] 406 Error - Attempting fallback...')
+            // Try fallback
+            const { data: fallbackData } = await supabase
+              .from('trips')
+              .select('id, status, driver_id, created_at')
+              .eq('driver_id', user.id)
+              .order('created_at', { ascending: false })
+              .limit(20)
+            
+            if (fallbackData) {
+              const mappedTrips = fallbackData.map((t: any) => ({
+                ...t,
+                customer_phone: '',
+                pickup_address: '',
+                destination_address: '',
+                updated_at: t.created_at || new Date().toISOString()
+              })) as Trip[]
+              setTrips(mappedTrips)
+            } else {
+              setTrips([])
+            }
+          } else {
+            setTrips([])
+          }
+        }
 
         if (data) {
           setTrips(data as Trip[])

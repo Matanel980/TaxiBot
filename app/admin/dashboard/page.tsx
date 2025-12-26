@@ -41,29 +41,94 @@ export default function AdminDashboard() {
     try {
       setData(prev => ({ ...prev, loading: true, error: null }))
 
-      // Fetch drivers with error handling
-      const { data: driversData, error: driversError } = await supabase
+      // Fetch drivers with timeout protection
+      const driverQuery = supabase
         .from('profiles')
-        .select('*')
+        .select('id, phone, role, full_name, vehicle_number, car_type, current_zone, is_online, is_approved, latitude, longitude, current_address, heading, updated_at')
         .eq('role', 'driver')
+
+      // Add timeout wrapper (10 seconds)
+      const timeoutPromise = new Promise<{ data: null, error: { message: string } }>((resolve) => 
+        setTimeout(() => resolve({ data: null, error: { message: 'Driver fetch timeout after 10 seconds' } }), 10000)
+      )
+
+      const result = await Promise.race([
+        driverQuery,
+        timeoutPromise
+      ])
+
+      const { data: driversData, error: driversError } = result
 
       if (driversError) {
         console.error('Error fetching drivers:', driversError)
-        if (driversError.message?.includes('relation') && driversError.message?.includes('does not exist')) {
-          setData(prev => ({
-            ...prev,
-            error: 'טבלת profiles לא קיימת. אנא הרץ את המיגרציה ב-Supabase.',
-            dbConnected: false,
-            loading: false,
-          }))
+        
+        // Handle 406 Not Acceptable errors specifically
+        const errorMessage = typeof driversError === 'object' && 'message' in driversError ? driversError.message : String(driversError)
+        const errorCode = typeof driversError === 'object' && 'code' in driversError ? driversError.code : undefined
+        
+        if (errorCode === 'PGRST116' || errorMessage?.includes('406') || errorMessage?.includes('Not Acceptable') || errorMessage?.includes('timeout')) {
+          console.error('[Admin Dashboard] 406 Error - Possible RLS or schema issue. Attempting fallback...')
+          // Fallback: Try with minimal columns
+          const { data: fallbackData, error: fallbackError } = await supabase
+            .from('profiles')
+            .select('id, role, full_name, is_online, latitude, longitude')
+            .eq('role', 'driver')
+          
+          if (fallbackError) {
+            console.error('[Admin Dashboard] Fallback also failed:', fallbackError)
+            if (!isMountedRef || isMountedRef.current) {
+              setData(prev => ({
+                ...prev,
+                error: 'שגיאת תקשורת עם מסד הנתונים. נסה לרענן את הדף.',
+                dbConnected: false,
+                loading: false,
+                drivers: [] // Set empty array to allow map to load
+              }))
+            }
+            return
+          } else {
+            // Use fallback data (map to full Profile type with defaults)
+            if (!isMountedRef || isMountedRef.current) {
+              const mappedDrivers = (fallbackData || []).map((d: any) => ({
+                ...d,
+                phone: d.phone || '',
+                vehicle_number: d.vehicle_number || null,
+                car_type: d.car_type || null,
+                current_zone: d.current_zone || null,
+                is_approved: d.is_approved ?? true,
+                current_address: d.current_address || null,
+                heading: d.heading || null,
+                updated_at: d.updated_at || new Date().toISOString()
+              })) as Profile[]
+              
+              setData(prev => ({
+                ...prev,
+                drivers: mappedDrivers,
+                dbConnected: true,
+              }))
+            }
+          }
+        } else if (driversError.message?.includes('relation') && driversError.message?.includes('does not exist')) {
+          if (!isMountedRef || isMountedRef.current) {
+            setData(prev => ({
+              ...prev,
+              error: 'טבלת profiles לא קיימת. אנא הרץ את המיגרציה ב-Supabase.',
+              dbConnected: false,
+              loading: false,
+              drivers: [] // Set empty array to allow map to load
+            }))
+          }
           return
-        }
-        if (!isMountedRef || isMountedRef.current) {
-          setData(prev => ({
-            ...prev,
-            error: `שגיאה בטעינת נהגים: ${driversError.message}`,
-            loading: false,
-          }))
+        } else {
+          if (!isMountedRef || isMountedRef.current) {
+            setData(prev => ({
+              ...prev,
+              error: `שגיאה בטעינת נהגים: ${driversError.message}`,
+              loading: false,
+              drivers: [] // Set empty array to allow map to load
+            }))
+          }
+          return
         }
       } else {
         if (!isMountedRef || isMountedRef.current) {
@@ -75,26 +140,73 @@ export default function AdminDashboard() {
         }
       }
 
-      // Fetch trips with error handling
-      const { data: tripsData, error: tripsError } = await supabase
-        .from('trips')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(100)
+      // Fetch trips with error handling and explicit column selection - wrapped in try-catch
+      try {
+        const { data: tripsData, error: tripsError } = await supabase
+          .from('trips')
+          .select('id, customer_phone, pickup_address, destination_address, status, driver_id, created_at, updated_at')
+          .order('created_at', { ascending: false })
+          .limit(100)
 
-      if (tripsError) {
-        console.error('Error fetching trips:', tripsError)
-        if (!tripsError.message?.includes('relation') && (!isMountedRef || isMountedRef.current)) {
+        if (tripsError) {
+          // Handle 406 errors specifically
+          if (tripsError.message?.includes('406') || tripsError.message?.includes('Not Acceptable')) {
+            console.error('[Admin Dashboard] 406 Error on trips fetch - Attempting fallback...')
+            // Try fallback with minimal columns
+            const { data: fallbackTrips } = await supabase
+              .from('trips')
+              .select('id, status, driver_id, created_at')
+              .order('created_at', { ascending: false })
+              .limit(100)
+            
+            if (fallbackTrips && (!isMountedRef || isMountedRef.current)) {
+              // Map to full Trip type with defaults
+              const mappedTrips = fallbackTrips.map((t: any) => ({
+                ...t,
+                customer_phone: '',
+                pickup_address: '',
+                destination_address: '',
+                updated_at: t.created_at || new Date().toISOString()
+              })) as Trip[]
+              
+              setData(prev => ({
+                ...prev,
+                trips: mappedTrips,
+              }))
+            } else if (!isMountedRef || isMountedRef.current) {
+              setData(prev => ({
+                ...prev,
+                trips: [], // Empty array to allow dashboard to load
+              }))
+            }
+          } else if (!tripsError.message?.includes('relation') && (!isMountedRef || isMountedRef.current)) {
+            console.error('Error fetching trips:', tripsError)
+            setData(prev => ({
+              ...prev,
+              error: prev.error || `שגיאה בטעינת נסיעות: ${tripsError.message}`,
+              trips: [], // Empty array to allow dashboard to load
+            }))
+          } else if (!isMountedRef || isMountedRef.current) {
+            setData(prev => ({
+              ...prev,
+              trips: [], // Empty array to allow dashboard to load
+            }))
+          }
+        } else if (!isMountedRef || isMountedRef.current) {
           setData(prev => ({
             ...prev,
-            error: prev.error || `שגיאה בטעינת נסיעות: ${tripsError.message}`,
+            trips: tripsData || [],
           }))
         }
-      } else if (!isMountedRef || isMountedRef.current) {
-        setData(prev => ({
-          ...prev,
-          trips: tripsData || [],
-        }))
+      } catch (tripsErr: any) {
+        console.error('[Admin Dashboard] Unexpected error fetching trips:', tripsErr)
+        // Don't block dashboard loading - set empty array
+        if (!isMountedRef || isMountedRef.current) {
+          setData(prev => ({
+            ...prev,
+            trips: [], // Empty array to allow dashboard to load
+          }))
+        }
       }
 
       // Fetch zones from API (GeoJSON FeatureCollection)
@@ -137,9 +249,11 @@ export default function AdminDashboard() {
         setData(prev => ({
           ...prev,
           error: `שגיאה בלתי צפויה: ${err.message}`,
+          loading: false, // CRITICAL: Always set loading to false on error
         }))
       }
     } finally {
+      // CRITICAL: Always set loading to false, regardless of errors
       if (!isMountedRef || isMountedRef.current) {
         setData(prev => ({ ...prev, loading: false }))
       }
@@ -331,15 +445,27 @@ export default function AdminDashboard() {
           onlineMap[key] = true
         })
         
-        setPresenceMap(onlineMap)
+        // CRITICAL: Only update if presence map actually changed to prevent unnecessary re-renders
+        setPresenceMap(prev => {
+          const prevKeys = Object.keys(prev).sort().join(',')
+          const newKeys = Object.keys(onlineMap).sort().join(',')
+          if (prevKeys === newKeys) {
+            return prev // No change, return previous state
+          }
+          return onlineMap
+        })
         console.log('[Admin Presence] Heartbeat sync:', onlineMap)
       })
       .on('presence', { event: 'join' }, ({ key }) => {
-        setPresenceMap(prev => ({ ...prev, [key]: true }))
+        setPresenceMap(prev => {
+          if (prev[key]) return prev // Already in map, no update needed
+          return { ...prev, [key]: true }
+        })
         console.log('[Admin Presence] Driver joined heartbeat:', key)
       })
       .on('presence', { event: 'leave' }, ({ key }) => {
         setPresenceMap(prev => {
+          if (!prev[key]) return prev // Already removed, no update needed
           const updated = { ...prev }
           delete updated[key]
           return updated

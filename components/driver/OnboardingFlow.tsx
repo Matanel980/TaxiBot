@@ -57,7 +57,16 @@ export function OnboardingFlow({ userId, initialPhone, onComplete }: OnboardingF
       if (error) throw error
 
       toast.success('הפרופיל עודכן בהצלחה!')
-      onComplete(formData)
+      
+      // Small delay to ensure DB update propagates before closing onboarding
+      await new Promise(resolve => setTimeout(resolve, 300))
+      
+      onComplete({
+        full_name: formData.full_name,
+        vehicle_number: formData.vehicle_number,
+        car_type: formData.car_type,
+        phone: formData.phone
+      })
     } catch (error: any) {
       console.error('Onboarding error:', error)
       toast.error('שגיאה בעדכון הפרופיל')
