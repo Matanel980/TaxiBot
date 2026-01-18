@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerSupabaseClient, createSupabaseAdminClient } from '@/lib/supabase-server'
+import { normalizeIsraeliPhone } from '@/lib/phone-utils'
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,7 +22,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Forbidden' }, { status: 403 })
     }
 
-    const { full_name, phone, vehicle_number, car_type, is_approved } = await request.json()
+    const { full_name, phone, vehicle_number, car_type, is_approved, station_id } = await request.json()
 
     if (!full_name || !phone) {
       return NextResponse.json(
@@ -30,8 +31,42 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // CRITICAL: Normalize phone number using SINGLE SOURCE OF TRUTH
+    let normalizedPhone: string
+    try {
+      normalizedPhone = normalizeIsraeliPhone(phone)
+      console.log('[DEBUG] Normalized phone:', normalizedPhone, 'from input:', phone)
+    } catch (normalizeError: any) {
+      return NextResponse.json(
+        { success: false, error: normalizeError.message || 'מספר טלפון לא תקין' },
+        { status: 400 }
+      )
+    }
+
+    // Get admin's station_id if not provided
+    let finalStationId = station_id
+    if (!finalStationId) {
+      const { data: adminProfile } = await supabase
+        .from('profiles')
+        .select('station_id')
+        .eq('id', user.id)
+        .single()
+      
+      if (adminProfile?.station_id) {
+        finalStationId = adminProfile.station_id
+      }
+    }
+
+    // VALIDATE: station_id is required for multi-tenant isolation
+    if (!finalStationId) {
+      return NextResponse.json(
+        { success: false, error: 'station_id is required. Admin must be assigned to a station.' },
+        { status: 400 }
+      )
+    }
+
     // Debug: Log phone number format
-    console.log('[DEBUG] Creating driver profile for phone:', phone)
+    console.log('[DEBUG] Creating driver profile for phone:', normalizedPhone)
 
     // Create Supabase Admin Client to bypass RLS
     let supabaseAdmin
@@ -50,13 +85,14 @@ export async function POST(request: NextRequest) {
     // Driver will create their auth user on first login via OTP
     const profileData = {
       id: crypto.randomUUID(), // Generate UUID for future auth user linkage
-      phone: phone, // Already in E.164 format
+      phone: normalizedPhone, // E.164 format from normalizeIsraeliPhone()
       role: 'driver' as const,
       full_name: full_name,
       vehicle_number: vehicle_number || null,
       car_type: car_type || null,
       is_approved: is_approved === true,
       is_online: false,
+      station_id: finalStationId, // AUTO-ASSIGN STATION (CRITICAL)
       current_zone: null,
       latitude: null,
       longitude: null,
@@ -88,7 +124,7 @@ export async function POST(request: NextRequest) {
     }
     
     console.log('[SUCCESS] Driver profile created successfully:', newDriver?.id)
-    console.log('[INFO] Driver can now log in with phone:', phone)
+    console.log('[INFO] Driver can now log in with phone:', normalizedPhone)
 
     return NextResponse.json({ success: true, data: newDriver })
   } catch (error: any) {

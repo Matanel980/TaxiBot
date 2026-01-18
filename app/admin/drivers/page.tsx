@@ -98,11 +98,31 @@ export default function AdminDriversPage() {
         },
         (payload) => {
           if (isMounted) {
-            // Optimistically update for better UX
+            // Optimistically update for better UX with validation
             if (payload.eventType === 'UPDATE' && payload.new) {
-              setDrivers(prev => prev.map(d =>
-                d.id === payload.new.id ? { ...d, ...payload.new } as Profile : d
-              ))
+              const newDriver = payload.new as Profile
+              setDrivers(prev => prev.map(d => {
+                if (d.id === payload.new.id) {
+                  // VALIDATE: Check coordinates before updating
+                  const hasValidCoords = 
+                    typeof newDriver.latitude === 'number' && 
+                    typeof newDriver.longitude === 'number' &&
+                    !isNaN(newDriver.latitude) && 
+                    !isNaN(newDriver.longitude) &&
+                    newDriver.latitude >= -90 && newDriver.latitude <= 90 &&
+                    newDriver.longitude >= -180 && newDriver.longitude <= 180 &&
+                    (newDriver.latitude !== 0 || newDriver.longitude !== 0)
+                  
+                  // If coordinates are invalid, keep old location
+                  if (!hasValidCoords && d.latitude && d.longitude) {
+                    newDriver.latitude = d.latitude
+                    newDriver.longitude = d.longitude
+                  }
+                  
+                  return { ...d, ...newDriver } as Profile
+                }
+                return d
+              }))
             } else {
               fetchDrivers()
             }

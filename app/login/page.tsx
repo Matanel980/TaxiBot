@@ -8,6 +8,9 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Phone, Lock } from 'lucide-react'
 import { formatPhoneNumber } from '@/lib/toast-utils'
+import { normalizeIsraeliPhone, extractPhoneDigits } from '@/lib/phone-utils'
+
+type LoginErrorType = 'whitelist' | 'station' | 'auth' | 'format' | null
 
 export default function LoginPage() {
   const [phone, setPhone] = useState('')
@@ -15,6 +18,7 @@ export default function LoginPage() {
   const [step, setStep] = useState<'phone' | 'otp'>('phone')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [errorType, setErrorType] = useState<LoginErrorType>(null)
   const router = useRouter()
   const supabase = createClient()
 
@@ -24,56 +28,82 @@ export default function LoginPage() {
     setError(null)
 
     try {
-      // Force strictly E.164 format: +972 followed by digits, no double plus
-      let sanitizedPhone = phone.trim().replace(/\D/g, '')
-      if (sanitizedPhone.startsWith('0')) {
-        sanitizedPhone = sanitizedPhone.substring(1)
+      // Use robust phone normalization utility
+      let formattedPhone: string
+      try {
+        formattedPhone = normalizeIsraeliPhone(phone)
+        console.log('[DEBUG] Login - Normalized phone:', formattedPhone)
+        setErrorType(null)
+      } catch (normalizeError: any) {
+        setError(normalizeError.message || 'מספר טלפון לא תקין. אנא הזן מספר טלפון ישראלי (05X-XXXXXXX)')
+        setErrorType('format')
+        setLoading(false)
+        return
       }
-      if (sanitizedPhone.startsWith('972')) {
-        sanitizedPhone = sanitizedPhone.substring(3)
-      }
-      const formattedPhone = `+972${sanitizedPhone}`
+
+      // BULLETPROOF WHITELIST CHECK: Format-agnostic comparison
+      // Extract digits from normalized phone for comparison
+      const phoneDigits = extractPhoneDigits(formattedPhone)
+      console.log('[DEBUG] Checking whitelist for digits:', phoneDigits, '(normalized:', formattedPhone, ')')
       
-      if (!sanitizedPhone || sanitizedPhone.length < 8) {
-        setError('מספר טלפון לא תקין. אנא הזן מספר טלפון ישראלי (05X-XXXXXXX)')
-        setLoading(false)
-        return
-      }
-
-      console.log('[DEBUG] Login - Strictly formatted:', formattedPhone)
-
-      // WHITELIST CHECK: Query profiles table BEFORE sending OTP
-      console.log('[DEBUG] Checking whitelist for:', formattedPhone)
-      const { data: profile, error: profileError } = await supabase
+      // Fetch ALL profiles with station_id (RLS will filter by station)
+      // Then compare digits client-side for format-agnostic matching
+      const { data: profiles, error: profileError } = await supabase
         .from('profiles')
-        .select('id, role, full_name')
-        .eq('phone', formattedPhone)
-        .single()
+        .select('id, role, full_name, station_id, phone')
+        .not('station_id', 'is', null) // Only users with station_id
 
-      if (profileError || !profile) {
-        console.log('[DEBUG] Whitelist check failed:', profileError)
-        setError('המספר לא מורשה להתחברות. אנא פנה למנהל התחנה.')
+      if (profileError) {
+        console.error('[DEBUG] Whitelist query error:', profileError)
+        setError('שגיאה בבדיקת הרשאות. אנא נסה שוב.')
+        setErrorType('auth')
         setLoading(false)
         return
       }
 
-      console.log('[DEBUG] Whitelist check passed for:', profile.full_name, 'Role:', profile.role)
+      // Format-agnostic comparison: find profile by matching digits
+      const profile = profiles?.find(p => {
+        const profileDigits = extractPhoneDigits(p.phone || '')
+        return profileDigits === phoneDigits
+      })
 
-      const { error } = await supabase.auth.signInWithOtp({
-        phone: formattedPhone, // Use strictly formatted phone
+      if (!profile) {
+        console.log('[DEBUG] Whitelist check failed: No matching profile found')
+        console.log('[DEBUG] Available profiles:', profiles?.map(p => ({ phone: p.phone, digits: extractPhoneDigits(p.phone || '') })))
+        setError('המספר לא מורשה להתחברות. אנא פנה למנהל התחנה.')
+        setErrorType('whitelist')
+        setLoading(false)
+        return
+      }
+
+      if (!profile.station_id) {
+        console.log('[DEBUG] User has no station_id assigned')
+        setError('המשתמש לא משויך לתחנה. אנא פנה למנהל התחנה.')
+        setErrorType('station')
+        setLoading(false)
+        return
+      }
+
+      console.log('[DEBUG] Whitelist check passed for:', profile.full_name, 'Role:', profile.role, 'Station:', profile.station_id)
+
+      // CRITICAL: Ensure auth.users phone matches profiles phone format
+      // Use normalized E.164 format for Supabase Auth
+      const { error: authError } = await supabase.auth.signInWithOtp({
+        phone: formattedPhone, // E.164 format: +972XXXXXXXXX
         options: {
           channel: 'sms'
         }
       })
 
       // Handle Twilio errors gracefully for test numbers
-      if (error) {
+      if (authError) {
+        console.error('[DEBUG] Supabase Auth error:', authError)
         // Check for Twilio error code 20003 (Invalid phone number) or other Twilio errors
-        const isTwilioError = error.message?.includes('Twilio') || 
-                              error.message?.includes('invalid username') ||
-                              error.message?.includes('Authentication Error') ||
-                              error.message?.includes('20003') ||
-                              error.code === '20003'
+        const isTwilioError = authError.message?.includes('Twilio') || 
+                              authError.message?.includes('invalid username') ||
+                              authError.message?.includes('Authentication Error') ||
+                              authError.message?.includes('20003') ||
+                              authError.code === '20003'
         
         if (isTwilioError) {
           // In development/test mode, allow proceeding if phone matches test numbers
@@ -83,38 +113,54 @@ export default function LoginPage() {
             console.warn('[DEV] Twilio error but test phone detected, allowing OTP entry')
             console.log('[DEV] Test phones list:', testPhones)
             console.log('[DEV] Formatted phone:', formattedPhone)
-            console.log('[DEV] Error details:', error.message, 'Code:', error.code)
+            console.log('[DEV] Error details:', authError.message, 'Code:', authError.code)
             // Allow user to proceed to OTP screen
             setPhone(formattedPhone)
             setStep('otp')
+            setErrorType(null)
             setLoading(false)
             return
           } else {
             // Real phone number but Twilio misconfigured or invalid
-            if (error.code === '20003' || error.message?.includes('20003')) {
-              throw new Error('מספר הטלפון לא תקין. אנא בדוק את המספר והזן אותו מחדש.')
+            if (authError.code === '20003' || authError.message?.includes('20003')) {
+              setError('מספר הטלפון לא תקין. אנא בדוק את המספר והזן אותו מחדש.')
+              setErrorType('format')
+              setLoading(false)
+              return
             }
-            throw new Error('שירות SMS לא זמין כרגע. אנא פנה למנהל המערכת.')
+            setError('שירות SMS לא זמין כרגע. אנא פנה למנהל המערכת.')
+            setErrorType('auth')
+            setLoading(false)
+            return
           }
         }
         
-        // For other errors, throw normally
-        throw error
+        // For other errors, show auth error
+        setError(authError.message || 'שגיאה בשליחת קוד אימות')
+        setErrorType('auth')
+        setLoading(false)
+        return
       }
 
       // Store formatted phone for OTP verification
       setPhone(formattedPhone)
       setStep('otp')
+      setErrorType(null)
     } catch (err: any) {
       console.error('Login error:', err)
       // Map common errors to Hebrew
       let errorMessage = err.message || 'שגיאה בשליחת קוד אימות'
       if (err.message?.includes('E.164') || err.message?.includes('invalid phone number format')) {
         errorMessage = 'מספר טלפון לא תקין. אנא הזן מספר טלפון ישראלי (05X-XXXXXXX)'
+        setErrorType('format')
       } else if (err.message?.includes('rate limit')) {
         errorMessage = 'יותר מדי בקשות. אנא נסה שוב בעוד כמה דקות'
+        setErrorType('auth')
       } else if (err.message?.includes('Twilio') || err.message?.includes('SMS')) {
         errorMessage = 'שירות SMS לא זמין כרגע. אנא פנה למנהל המערכת.'
+        setErrorType('auth')
+      } else {
+        setErrorType('auth')
       }
       setError(errorMessage)
     } finally {
@@ -174,9 +220,10 @@ export default function LoginPage() {
         console.log('[DEBUG] User authenticated:', user.id, user.phone)
         
         // Find the pre-created profile by phone
+        // CRITICAL: Include station_id for consistency with step 1 validation
         const { data: profile, error: profileError } = await supabase
           .from('profiles')
-          .select('id, role, full_name, vehicle_number, car_type')
+          .select('id, role, full_name, vehicle_number, car_type, station_id')
           .eq('phone', phone)
           .single()
         
@@ -191,30 +238,71 @@ export default function LoginPage() {
 
         // Check if profile needs to be linked to auth user
         if (profile.id !== user.id) {
-          console.log('[DEBUG] Linking profile to auth user. Old ID:', profile.id, 'New ID:', user.id)
+          console.log('[DEBUG] Profile ID mismatch. Old ID:', profile.id, 'New ID:', user.id)
+          console.log('[DEBUG] Attempting to link profile via API route...')
           
-          // Update profile with auth user ID to link them
-          const { error: updateError } = await supabase
-            .from('profiles')
-            .update({ id: user.id })
-            .eq('phone', phone)
-          
-          if (updateError) {
-            console.error('[ERROR] Failed to link profile to auth user:', updateError)
-            // Continue anyway - profile exists but might need manual linking
-          } else {
-            console.log('[DEBUG] Successfully linked profile to auth user')
+          // Use API route with service role to properly migrate profile
+          // (can't update primary key directly)
+          const linkResponse = await fetch('/api/auth/link-profile', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              oldProfileId: profile.id,
+              newUserId: user.id,
+              phone: phone
+            })
+          })
+
+          const linkResult = await linkResponse.json()
+
+          if (!linkResponse.ok || !linkResult.success) {
+            console.error('[ERROR] Failed to link profile to auth user:', linkResult.error)
+            setError('שגיאה בקישור הפרופיל. אנא פנה למנהל התחנה.')
+            setLoading(false)
+            return
           }
+
+          console.log('[DEBUG] Successfully linked profile to auth user via API')
+          // Profile is now linked - continue with redirect below
         }
 
-        // Redirect based on role
-        if (profile.role === 'admin') {
+        // Get profile with correct ID (either already matched or newly linked)
+        // CRITICAL: Include station_id for validation
+        const { data: verifiedProfile, error: verifyError } = await supabase
+          .from('profiles')
+          .select('id, role, full_name, vehicle_number, car_type, station_id')
+          .eq('id', user.id)
+          .single()
+
+        if (verifyError || !verifiedProfile) {
+          console.error('[ERROR] Profile not found for user ID:', user.id)
+          setError('שגיאה באימות הפרופיל. אנא פנה למנהל התחנה.')
+          setLoading(false)
+          return
+        }
+
+        // Validate station_id after linking (consistent with step 1 requirement)
+        if (!verifiedProfile.station_id) {
+          console.error('[ERROR] Profile missing station_id after linking:', verifiedProfile)
+          setError('המשתמש לא משויך לתחנה. אנא פנה למנהל התחנה.')
+          setErrorType('station')
+          setLoading(false)
+          return
+        }
+
+        // Use verified profile for redirect logic (has correct ID and station_id)
+        const finalProfile = verifiedProfile
+
+        // Redirect based on role (use finalProfile which has correct ID)
+        if (finalProfile.role === 'admin') {
           console.log('[DEBUG] Admin login, redirecting to admin dashboard')
           alert('✅ התחברת בהצלחה כמנהל!')
           window.location.replace('/admin/dashboard')
-        } else if (profile.role === 'driver') {
+        } else if (finalProfile.role === 'driver') {
           // Check if onboarding needed
-          const isIncomplete = !profile.vehicle_number || !profile.car_type
+          const isIncomplete = !finalProfile.vehicle_number || !finalProfile.car_type
           console.log('[DEBUG] Driver login, incomplete profile:', isIncomplete)
           
           alert('✅ התחברת בהצלחה כנהג!')
@@ -265,7 +353,39 @@ export default function LoginPage() {
                 </div>
               </div>
               {error && (
-                <p className="text-sm text-red-500">{error}</p>
+                <div className="space-y-2">
+                  <p className="text-sm text-red-500">{error}</p>
+                  {/* Debug Status Indicator */}
+                  {errorType && (
+                    <div className="text-xs text-slate-500 bg-slate-100 dark:bg-slate-800 p-2 rounded border border-slate-200 dark:border-slate-700">
+                      <div className="font-semibold mb-1">סוג שגיאה:</div>
+                      {errorType === 'whitelist' && (
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                          <span>(A) משתמש לא ברשימת המורשים</span>
+                        </div>
+                      )}
+                      {errorType === 'station' && (
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-orange-500"></span>
+                          <span>(B) משתמש לא משויך לתחנה</span>
+                        </div>
+                      )}
+                      {errorType === 'auth' && (
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
+                          <span>(C) שגיאת אימות Supabase</span>
+                        </div>
+                      )}
+                      {errorType === 'format' && (
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                          <span>פורמט מספר טלפון לא תקין</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'שולח...' : 'שלח קוד אימות'}
@@ -303,6 +423,7 @@ export default function LoginPage() {
                     setStep('phone')
                     setOtp('')
                     setError(null)
+                    setErrorType(null)
                   }}
                 >
                   חזור

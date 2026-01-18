@@ -66,3 +66,10 @@ export function useSupabaseQuery<T>({ query, dependencies = [], onError }: UseSu
   return { data, loading, error }
 }
 
+
+
+
+
+
+
+

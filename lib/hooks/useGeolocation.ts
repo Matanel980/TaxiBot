@@ -6,7 +6,7 @@ import { getAddressFromCoords } from '@/lib/google-maps-loader'
 
 interface UseGeolocationOptions {
   enabled: boolean
-  driverId: string
+  driverId: string | null
   updateInterval?: number
 }
 
@@ -14,7 +14,14 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
   const watchIdRef = useRef<number | null>(null)
   const lastPositionRef = useRef<{ lat: number; lng: number } | null>(null)
   const lastAddressRef = useRef<string | null>(null)
+  const lastDbWriteTimeRef = useRef<number>(0)
+  const pendingUpdateRef = useRef<boolean>(false)
+  const updateTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const supabase = createClient()
+
+  // THROTTLE: Minimum 5 seconds between database writes (not debounce - writes happen at intervals)
+  const MIN_DB_WRITE_INTERVAL = 5000 // 5 seconds between DB writes
+  const minUpdateInterval = updateInterval // 4 seconds for geolocation checks
 
   useEffect(() => {
     if (!enabled || !driverId) {
@@ -23,6 +30,10 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
         watchIdRef.current = null
       }
       lastPositionRef.current = null
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current)
+        updateTimeoutRef.current = null
+      }
       return
     }
 
@@ -31,9 +42,7 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
       return
     }
 
-    let lastUpdateTime = 0
-    const minUpdateInterval = updateInterval // 4 seconds
-    const minDistanceMeters = 10 // Only update if driver moved at least 10 meters (Waze-like threshold)
+    const minDistanceMeters = 10 // Only update if driver moved at least 10 meters
 
     // Helper function to calculate distance between two coordinates (Haversine formula)
     const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
@@ -51,11 +60,132 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
       return R * c // Distance in meters
     }
 
+    // Throttled database write function (writes at fixed intervals, not on-demand)
+    const writeLocationToDatabase = async (latitude: number, longitude: number, heading: number | null, address: string | null) => {
+      // CRITICAL: Validate driverId before attempting write
+      if (!driverId) {
+        console.error('[useGeolocation] Cannot write location: driverId is missing', {
+          driverId,
+          enabled,
+          latitude,
+          longitude
+        })
+        return
+      }
+
+      const now = Date.now()
+      const timeSinceLastWrite = now - lastDbWriteTimeRef.current
+
+      // THROTTLE: Only write if enough time has passed
+      if (timeSinceLastWrite < MIN_DB_WRITE_INTERVAL) {
+        // Skip this write, schedule next one
+        if (updateTimeoutRef.current) {
+          clearTimeout(updateTimeoutRef.current)
+        }
+        const delay = MIN_DB_WRITE_INTERVAL - timeSinceLastWrite
+        updateTimeoutRef.current = setTimeout(() => {
+          writeLocationToDatabase(latitude, longitude, heading, address)
+        }, delay)
+        return
+      }
+
+      // Enough time passed - write now
+      lastDbWriteTimeRef.current = now
+      pendingUpdateRef.current = true
+
+      try {
+        const updateData: any = {
+          latitude,
+          longitude,
+          updated_at: new Date().toISOString(),
+        }
+        if (heading !== null) updateData.heading = heading
+        if (address !== null) updateData.current_address = address
+
+        // Use UPDATE instead of UPSERT - profile must exist after migration
+        // This ensures we're updating the correct profile with the migrated UUID
+        // Add timeout protection to prevent hanging on network issues
+        const updatePromise = supabase
+          .from('profiles')
+          .update(updateData)
+          .eq('id', driverId) // CRITICAL: Use migrated UUID (auth.user.id)
+          .select('id, latitude, longitude')
+          .single()
+        
+        // Race with timeout (5 seconds) to prevent hanging
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('Location update timeout after 5 seconds')), 5000)
+        })
+        
+        const { data, error } = await Promise.race([updatePromise, timeoutPromise])
+
+        if (error) {
+          // Enhanced error logging with full details
+          console.error('[useGeolocation] Error updating location:', {
+            error: error.message || 'Unknown error',
+            code: error.code || 'NO_CODE',
+            details: error.details || 'No details',
+            hint: error.hint || 'No hint',
+            driverId: driverId, // Log the UUID being used
+            latitude,
+            longitude,
+            updateData
+          })
+
+          // Handle specific error codes
+          if (error.code === 'PGRST116' || error.message?.includes('0 rows')) {
+            console.error('[useGeolocation] Profile not found - ID may not be migrated correctly:', {
+              driverId,
+              message: 'Profile with this ID does not exist. Ensure profile migration completed successfully.'
+            })
+          } else if (error.code === '42501' || error.message?.includes('permission denied') || error.message?.includes('RLS')) {
+            console.error('[useGeolocation] RLS policy violation - check profiles_update_own policy:', {
+              driverId,
+              message: 'Row Level Security policy may be blocking the update. Verify auth.uid() = id policy exists.'
+            })
+          } else if (error.code === '23505' || error.message?.includes('409') || error.message?.includes('Conflict')) {
+            console.warn('[useGeolocation] Database write conflict (409) - skipping. This is normal during concurrent updates.')
+          }
+        } else if (data) {
+          console.log('[useGeolocation] Location written to database successfully:', {
+            driverId: data.id,
+            latitude: data.latitude,
+            longitude: data.longitude,
+            timestamp: new Date().toISOString()
+          })
+        }
+      } catch (error: any) {
+        // Enhanced exception logging
+        console.error('[useGeolocation] Exception updating location:', {
+          error: error.message || 'Unknown exception',
+          errorName: error.name || 'UnknownError',
+          stack: error.stack,
+          driverId,
+          latitude,
+          longitude
+        })
+      } finally {
+        pendingUpdateRef.current = false
+      }
+    }
+
     const updateLocation = async (position: GeolocationPosition) => {
       const now = Date.now()
       
-      // Throttle updates to prevent excessive API calls
-      if (now - lastUpdateTime < minUpdateInterval) {
+      // Throttle updates to prevent excessive API calls (for geocoding)
+      if (lastPositionRef.current && (now - lastDbWriteTimeRef.current < minUpdateInterval)) {
+        // Still update local state (for map) but skip geocoding/DB write
+        const { latitude, longitude } = position.coords
+        const distance = calculateDistance(
+          lastPositionRef.current.lat,
+          lastPositionRef.current.lng,
+          latitude,
+          longitude
+        )
+        if (distance >= minDistanceMeters) {
+          lastPositionRef.current = { lat: latitude, lng: longitude }
+          // Map will update via realtime subscription, no need to force DB write
+        }
         return
       }
       
@@ -75,102 +205,67 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
         }
       }
       
-      lastUpdateTime = now
       lastPositionRef.current = { lat: latitude, lng: longitude }
-      
-      try {
-        // Reverse Geocode with its own safety wrapper
-        let address = null
-        try {
-          address = await getAddressFromCoords(latitude, longitude)
-        } catch (geoErr) {
-          console.warn('[Geolocation] Reverse geocoding failed, continuing with coordinates only:', geoErr)
-        }
-        
-        console.log('[Geolocation] Updating driver location:', {
-          driverId,
-          latitude,
-          longitude,
-          heading,
-          address,
-          timestamp: new Date().toISOString()
+
+      // Get address asynchronously (don't block location update)
+      // Write to database with throttling (5 second minimum)
+      getAddressFromCoords(latitude, longitude)
+        .then(address => {
+          lastAddressRef.current = address
+          // Write to database with throttling
+          writeLocationToDatabase(latitude, longitude, heading || null, address)
         })
-
-        const { data, error } = await supabase
-          .from('profiles')
-          .update({
-            latitude,
-            longitude,
-            heading,
-            current_address: address,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', driverId)
-          .select('id, is_online, latitude, longitude, current_address, heading, updated_at')
-
-        if (error) {
-          console.error('[Geolocation] ❌ Error updating location:', {
-            error: error.message,
-            code: error.code,
-            details: error.details,
-            hint: error.hint,
-            driverId,
-            latitude,
-            longitude
-          })
-          
-          // Check if it's an RLS policy issue
-          if (error.code === '42501' || error.message?.includes('permission denied') || error.message?.includes('policy')) {
-            console.error('[Geolocation] 🔒 RLS POLICY BLOCKING UPDATE - Driver may not have permission to update location')
-          }
-          
-          lastPositionRef.current = null
-        } else {
-          console.log('[Geolocation] ✅ Location updated successfully and broadcast via Realtime:', {
-            driverId,
-            latitude,
-            longitude,
-            heading,
-            address,
-            timestamp: new Date().toISOString(),
-            data: data?.[0]
-          })
-        }
-      } catch (err) {
-        console.error('[Geolocation] Unexpected error:', err)
-        lastPositionRef.current = null
-      }
+        .catch(error => {
+          console.warn('[useGeolocation] Error getting address:', error)
+          // Still write location even if address fails
+          writeLocationToDatabase(latitude, longitude, heading || null, null)
+        })
     }
 
-    // Use watchPosition for continuous updates (more efficient than getCurrentPosition + interval)
+    const errorHandler = (error: GeolocationPositionError) => {
+      // Enhanced geolocation error logging with detailed messages
+      const errorMessages: Record<number, string> = {
+        1: 'PERMISSION_DENIED - User denied the request for geolocation',
+        2: 'POSITION_UNAVAILABLE - Location information is unavailable',
+        3: 'TIMEOUT - The request to get user location timed out'
+      }
+      
+      const errorMessage = errorMessages[error.code] || `Unknown geolocation error (code: ${error.code})`
+      
+      console.error('[useGeolocation] Geolocation error:', {
+        code: error.code,
+        message: errorMessage,
+        details: error.message || 'No additional details',
+        driverId: driverId || 'NOT_SET',
+        enabled
+      })
+
+      // Handle permission denied with user-friendly prompt
+      if (error.code === 1) {
+        // Permission denied - show user-friendly message
+        console.warn('[useGeolocation] Location permission denied. Please enable location access in browser settings.')
+        // Note: We can't show browser alerts in hooks, but the error is logged
+        // The UI should handle showing a permission prompt if needed
+      } else if (error.code === 2) {
+        // Position unavailable - might be temporary
+        console.warn('[useGeolocation] Location unavailable. This might be temporary. Retrying...')
+      } else if (error.code === 3) {
+        // Timeout - might be network/GPS issue
+        console.warn('[useGeolocation] Location request timed out. GPS might be slow or unavailable.')
+      }
+
+      // Don't throw - allow graceful degradation
+      // Location updates will resume if permission is granted later
+      // The watchPosition will continue to retry automatically
+    }
+
     watchIdRef.current = navigator.geolocation.watchPosition(
       updateLocation,
-      (error) => {
-        // Handle specific geolocation error codes
-        let errorMessage = 'Unknown geolocation error'
-        switch (error.code) {
-          case error.PERMISSION_DENIED:
-            errorMessage = 'Geolocation permission denied. Please enable location access.'
-            break
-          case error.POSITION_UNAVAILABLE:
-            errorMessage = 'Location information unavailable.'
-            break
-          case error.TIMEOUT:
-            errorMessage = 'Location request timed out.'
-            break
-          default:
-            errorMessage = `Geolocation error: ${error.message || 'Unknown error'}`
-        }
-        
-        // Only log errors, don't spam console
-        if (error.code !== error.TIMEOUT || Math.random() < 0.1) { // Log 10% of timeout errors
-          console.warn('Geolocation error:', errorMessage, error.code)
-        }
-      },
+      errorHandler,
       {
         enableHighAccuracy: true,
-        timeout: 5000, // Reduced from 10s to 5s
-        maximumAge: 2000 // Accept cached position up to 2 seconds old
+        maximumAge: 2000, // Accept cached position up to 2 seconds old
+        timeout: 5000, // 5 second timeout
       }
     )
 
@@ -179,9 +274,11 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
         navigator.geolocation.clearWatch(watchIdRef.current)
         watchIdRef.current = null
       }
-      lastPositionRef.current = null
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current)
+        updateTimeoutRef.current = null
+      }
+      pendingUpdateRef.current = false
     }
-  }, [enabled, driverId, updateInterval, supabase])
+  }, [enabled, driverId, supabase, minUpdateInterval])
 }
-
-

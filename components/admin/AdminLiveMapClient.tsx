@@ -1,9 +1,10 @@
 'use client'
 
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react'
-import { GoogleMap, Marker, Polygon, useJsApiLoader } from '@react-google-maps/api'
+import { GoogleMap, Marker, Polygon, InfoWindow, Polyline, useJsApiLoader } from '@react-google-maps/api'
+import { AdvancedDriverMarker } from './AdvancedDriverMarker'
 import { createClient } from '@/lib/supabase'
-import type { Profile, ZonePostGIS } from '@/lib/supabase'
+import type { Profile, ZonePostGIS, Trip } from '@/lib/supabase'
 import { 
   silverMapStyle, 
   ACRE_CENTER, 
@@ -13,6 +14,7 @@ import {
 import { geometryToGooglePaths, featureToZone } from '@/lib/spatial-utils'
 import { useDriverTrips } from '@/lib/hooks/useDriverTrips'
 import { DriverDetailSheet } from './DriverDetailSheet'
+import { RouteVisualization } from './RouteVisualization'
 import React from 'react'
 
 // Zone polygon component
@@ -57,11 +59,15 @@ const containerStyle = {
 interface AdminLiveMapClientProps {
   drivers: Profile[]
   zones?: ZonePostGIS[]
+  trips?: Trip[]
+  selectedTripId?: string | null
   presenceMap?: Record<string, boolean>
+  selectedDriverId?: string // Optional: external driver selection control
+  onDriverSelect?: (driver: Profile | null) => void // Optional: callback for driver selection
 }
 
 // Animated driver marker with smooth transitions
-const DriverMarker = React.memo(({ 
+const DriverMarker = ({ 
   driver, 
   isSelected,
   onSelect,
@@ -76,6 +82,7 @@ const DriverMarker = React.memo(({
 }) => {
   const [position, setPosition] = useState({ lat: driver.latitude || 0, lng: driver.longitude || 0 })
   const [heading, setHeading] = useState(driver.heading || 0)
+  const [showInfoWindow, setShowInfoWindow] = useState(false)
   const animationFrameRef = useRef<number | null>(null)
 
   // Smooth interpolation (glide) effect
@@ -147,33 +154,43 @@ const DriverMarker = React.memo(({
   }, [icon])
 
   return (
-    <Marker
-      position={position}
-      icon={markerIcon}
-      onClick={onSelect}
-      animation={isSelected ? google.maps.Animation.BOUNCE : undefined}
-      zIndex={isSelected ? 1000 : (isDisconnected ? 0 : 500)}
-      opacity={isDisconnected ? 0.5 : 1.0} // Use the Marker's native opacity property
-    />
+    <>
+      <Marker
+        position={position}
+        icon={markerIcon}
+        onClick={() => {
+          setShowInfoWindow(true)
+          onSelect()
+        }}
+        animation={isSelected ? google.maps.Animation.BOUNCE : undefined}
+        zIndex={isSelected ? 1000 : (isDisconnected ? 0 : 500)}
+        opacity={isDisconnected ? 0.5 : 1.0}
+      />
+      {showInfoWindow && (
+        <InfoWindow
+          position={position}
+          onCloseClick={() => setShowInfoWindow(false)}
+        >
+          <div className="px-2 py-1">
+            <p className="text-sm font-semibold text-gray-900">{driver.full_name}</p>
+            {driver.vehicle_number && (
+              <p className="text-xs text-gray-600">{driver.vehicle_number}</p>
+            )}
+          </div>
+        </InfoWindow>
+      )}
+    </>
   )
-}, (prevProps, nextProps) => {
-  return (
-    prevProps.driver.id === nextProps.driver.id &&
-    prevProps.driver.latitude === nextProps.driver.latitude &&
-    prevProps.driver.longitude === nextProps.driver.longitude &&
-    prevProps.driver.heading === nextProps.driver.heading &&
-    prevProps.driver.is_online === nextProps.driver.is_online &&
-    prevProps.isDisconnected === nextProps.isDisconnected &&
-    prevProps.isSelected === nextProps.isSelected
-  )
-})
-
-DriverMarker.displayName = 'DriverMarker'
+}
 
 export function AdminLiveMapClient({ 
   drivers: initialDrivers, 
   zones: initialZones = [],
-  presenceMap = {}
+  trips = [],
+  selectedTripId = null,
+  presenceMap = {},
+  selectedDriverId,
+  onDriverSelect
 }: AdminLiveMapClientProps) {
   const { isLoaded, loadError } = useJsApiLoader(GOOGLE_MAPS_LOADER_OPTIONS)
 
@@ -190,11 +207,43 @@ export function AdminLiveMapClient({
   const [drivers, setDrivers] = useState<Profile[]>(initialDrivers || [])
   
   // Update drivers state when prop changes (from parent Realtime subscription)
+  // FIX: Use deep comparison to ensure all updates are caught
   useEffect(() => {
-    if (initialDrivers) {
+    if (!initialDrivers) return
+    
+    // Create a key from all driver IDs and their location to detect any change
+    const currentKey = drivers.map(d => `${d.id}:${d.latitude}:${d.longitude}:${d.updated_at}`).join('|')
+    const newKey = initialDrivers.map(d => `${d.id}:${d.latitude}:${d.longitude}:${d.updated_at}`).join('|')
+    
+    // Only update if there's an actual change to prevent unnecessary re-renders
+    if (currentKey !== newKey) {
+      console.log('[AdminMap] Drivers prop changed, updating state:', {
+        oldCount: drivers.length,
+        newCount: initialDrivers.length,
+        changed: currentKey !== newKey
+      })
       setDrivers(initialDrivers)
     }
-  }, [initialDrivers])
+  }, [initialDrivers, drivers])
+  
+  // Sync with external selectedDriverId prop (after drivers state is initialized)
+  useEffect(() => {
+    if (selectedDriverId) {
+      const driver = drivers.find(d => d.id === selectedDriverId)
+      if (driver) {
+        setSelectedDriver(driver)
+      }
+    } else if (selectedDriverId === undefined) {
+      // Only clear if explicitly set to null/undefined from parent
+      // Internal selection is managed separately
+    }
+  }, [selectedDriverId, drivers])
+  
+  // Notify parent when selection changes internally
+  const handleDriverSelect = useCallback((driver: Profile | null) => {
+    setSelectedDriver(driver)
+    onDriverSelect?.(driver)
+  }, [onDriverSelect])
 
   // Debug: Log initial props and driver location data
   useEffect(() => {
@@ -324,7 +373,7 @@ export function AdminLiveMapClient({
   useEffect(() => {
     if (!isLoaded || zones.length === 0) return
 
-    // Debounce zone checks to avoid excessive API calls (2 seconds)
+    // Debounce zone checks to avoid excessive API calls (500ms for faster updates)
     const zoneCheckTimeout = setTimeout(() => {
       drivers.forEach(async (driver) => {
         if (!driver.latitude || !driver.longitude || !driver.is_online) return
@@ -356,7 +405,7 @@ export function AdminLiveMapClient({
           console.error('Error checking zone for driver:', error)
         }
       })
-    }, 2000) // Check zones every 2 seconds max (was running on every driver change)
+    }, 500) // Check zones every 500ms for faster zone detection
 
     return () => clearTimeout(zoneCheckTimeout)
   }, [drivers, zones, isLoaded, supabase])
@@ -364,29 +413,35 @@ export function AdminLiveMapClient({
   // Memoize online drivers with validation
   const onlineDrivers = useMemo(() => {
     const valid = drivers.filter(d => {
+      // Validate coordinates are valid numbers and within valid ranges
+      const hasValidCoords = 
+        typeof d.latitude === 'number' && 
+        typeof d.longitude === 'number' &&
+        !isNaN(d.latitude) && 
+        !isNaN(d.longitude) &&
+        d.latitude >= -90 && d.latitude <= 90 &&
+        d.longitude >= -180 && d.longitude <= 180 &&
+        (d.latitude !== 0 || d.longitude !== 0) // Exclude (0,0) which is invalid
+      
       const isValid = d.is_online && 
                       d.role === 'driver' && 
-                      typeof d.latitude === 'number' && 
-                      typeof d.longitude === 'number' &&
-                      !isNaN(d.latitude) && 
-                      !isNaN(d.longitude) &&
-                      d.latitude >= -90 && d.latitude <= 90 &&
-                      d.longitude >= -180 && d.longitude <= 180
+                      hasValidCoords
       
-      if (!isValid && d.is_online) {
-        console.warn('[AdminMap] Invalid driver coordinates:', {
+      if (d.is_online && !hasValidCoords) {
+        console.warn('[AdminMap] ⚠️ Driver has invalid coordinates:', {
           id: d.id,
           name: d.full_name,
           lat: d.latitude,
           lng: d.longitude,
-          is_online: d.is_online
+          latType: typeof d.latitude,
+          lngType: typeof d.longitude
         })
       }
       
       return isValid
     })
     
-    console.log('[AdminMap] Valid online drivers:', valid.length, 'out of', drivers.length)
+    console.log('[AdminMap] Valid online drivers:', valid.length, 'out of', drivers.length, 'total')
     return valid
   }, [drivers])
 
@@ -410,7 +465,10 @@ export function AdminLiveMapClient({
     }
 
     try {
-      return {
+      // Check if Map ID is available (optional - for Advanced Markers)
+      const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID
+      
+      const options: google.maps.MapOptions = {
         disableDefaultUI: false,
         zoomControl: true,
         zoomControlOptions: {
@@ -430,6 +488,13 @@ export function AdminLiveMapClient({
         zoom: 13,
         gestureHandling: 'greedy',
       }
+      
+      // Only add mapId if available (required for Advanced Markers)
+      if (mapId) {
+        options.mapId = mapId
+      }
+      
+      return options
     } catch (error) {
       console.error('[AdminMap] Error creating map options:', error)
       return {
@@ -458,39 +523,86 @@ export function AdminLiveMapClient({
     }
   }, [isLoaded, drivers.length, onlineDrivers.length])
 
-  // Update map bounds when drivers change
+  // Center map on selected driver
+  useEffect(() => {
+    if (!isLoaded || !mapRef.current || !selectedDriver || typeof window === 'undefined' || !window.google) return
+    
+    if (selectedDriver.latitude && selectedDriver.longitude) {
+      mapRef.current.setCenter({ lat: selectedDriver.latitude, lng: selectedDriver.longitude })
+      mapRef.current.setZoom(16)
+    }
+  }, [selectedDriver, isLoaded])
+
+  // Update map bounds when drivers or trips change (but not when a driver is selected)
   useEffect(() => {
     if (!isLoaded || !mapRef.current || typeof window === 'undefined' || !window.google) return
+    if (selectedDriver) return // Don't auto-fit bounds if a driver is selected
 
+    // Create a key that includes drivers AND trips to detect any change
     const driversKey = onlineDrivers.map(d => `${d.id}:${d.latitude}:${d.longitude}`).join(',')
-    if (driversKey === prevDriversKeyRef.current && !isInitialMountRef.current) {
+    const tripsKey = trips
+      .filter(t => t.pickup_lat && t.pickup_lng)
+      .map(t => `${t.id}:${t.pickup_lat}:${t.pickup_lng}`)
+      .join(',')
+    const combinedKey = `${driversKey}|${tripsKey}`
+    
+    if (combinedKey === prevDriversKeyRef.current && !isInitialMountRef.current) {
       return
     }
 
-    prevDriversKeyRef.current = driversKey
+    prevDriversKeyRef.current = combinedKey
 
-    if (onlineDrivers.length > 0) {
-      const bounds = new window.google.maps.LatLngBounds()
-      onlineDrivers.forEach(driver => {
-        if (driver.latitude && driver.longitude) {
-          bounds.extend({ lat: driver.latitude, lng: driver.longitude })
-        }
+    const bounds = new window.google.maps.LatLngBounds()
+    let hasValidCoords = false
+    
+    // Add all online drivers to bounds
+    onlineDrivers.forEach(driver => {
+      if (driver.latitude && driver.longitude) {
+        bounds.extend({ lat: driver.latitude, lng: driver.longitude })
+        hasValidCoords = true
+      }
+    })
+    
+    // Add all trip pickup and destination points to bounds
+    trips.forEach(trip => {
+      // Add pickup coordinates
+      if (trip.pickup_lat && trip.pickup_lng) {
+        bounds.extend({ lat: trip.pickup_lat, lng: trip.pickup_lng })
+        hasValidCoords = true
+      }
+      // Add destination coordinates (check both possible field names)
+      const destLat = (trip as any).destination_lat || (trip as any).destination_latitude
+      const destLng = (trip as any).destination_lng || (trip as any).destination_longitude
+      if (destLat && destLng) {
+        bounds.extend({ lat: destLat, lng: destLng })
+        hasValidCoords = true
+      }
+    })
+
+    if (hasValidCoords) {
+      // Fit bounds to include all drivers AND trip locations
+      mapRef.current.fitBounds(bounds, {
+        top: 50,
+        right: 50,
+        bottom: 50,
+        left: 50,
       })
-
-      if (isInitialMountRef.current || bounds.toJSON()) {
-        mapRef.current.fitBounds(bounds, 50)
-        const listener = window.google.maps.event.addListener(
-          mapRef.current,
-          'bounds_changed',
-          () => {
-            if (mapRef.current && mapRef.current.getZoom()! > 16) {
+      
+      const listener = window.google.maps.event.addListener(
+        mapRef.current,
+        'bounds_changed',
+        () => {
+          if (mapRef.current) {
+            const currentZoom = mapRef.current.getZoom()
+            if (currentZoom && currentZoom > 16) {
               mapRef.current.setZoom(16)
             }
-            window.google.maps.event.removeListener(listener)
           }
-        )
-      }
+          window.google.maps.event.removeListener(listener)
+        }
+      )
     } else {
+      // No valid coordinates - use default center
       if (isInitialMountRef.current) {
         mapRef.current.setCenter(ACRE_CENTER)
         mapRef.current.setZoom(13)
@@ -502,7 +614,7 @@ export function AdminLiveMapClient({
         isInitialMountRef.current = false
       }, 1000)
     }
-  }, [onlineDrivers, isLoaded])
+  }, [onlineDrivers, trips, isLoaded, selectedDriver])
 
   const onLoad = useCallback((map: google.maps.Map) => {
     mapRef.current = map
@@ -581,8 +693,8 @@ export function AdminLiveMapClient({
           <ZonePolygon key={zone.id} zone={zone} />
         ))}
 
-        {/* Render driver markers - only when Google Maps is fully loaded */}
-        {isLoaded && typeof window !== 'undefined' && window.google && drivers.map((driver) => {
+        {/* Render driver markers using AdvancedMarkerElement - only when Google Maps is fully loaded */}
+        {isLoaded && typeof window !== 'undefined' && window.google && mapRef.current && drivers.map((driver) => {
           if (!driver.latitude || !driver.longitude) {
             console.log('[AdminMap] Skipping driver without coordinates:', driver.id, driver.full_name)
             return null
@@ -593,17 +705,72 @@ export function AdminLiveMapClient({
             return null
           }
           
+          // CRITICAL: AdvancedMarkerElement requires a Map ID to work
+          // Check if map has mapId before using Advanced Markers
+          // If no mapId, fall back to classic Marker to avoid console errors
+          const mapIdFromEnv = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID
+          const mapIdFromOptions = (mapOptions as any)?.mapId
+          const hasMapId = mapIdFromEnv || mapIdFromOptions
+          
+          const canUseAdvancedMarkers = 
+            window.google.maps.marker && 
+            window.google.maps.marker.AdvancedMarkerElement && 
+            hasMapId
+          
+          // Log if Advanced Markers are disabled (only once per mount)
+          if (!hasMapId && window.google.maps.marker?.AdvancedMarkerElement && isInitialMountRef.current) {
+            console.info('[AdminMap] ℹ️ Using classic Markers (Advanced Markers require Map ID). To enable Advanced Markers, set NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID in .env.local')
+          }
+          
+          // Use AdvancedMarkerElement only if Map ID is available
+          if (canUseAdvancedMarkers) {
+            return (
+              <AdvancedDriverMarker
+                key={driver.id}
+                driver={driver}
+                isSelected={selectedDriver?.id === driver.id}
+                onSelect={() => handleDriverSelect(driver)}
+                isDisconnected={driver.is_online && !presenceMap[driver.id]}
+                google={window.google}
+                map={mapRef.current}
+              />
+            )
+          }
+          
+          // Fallback to classic Marker if AdvancedMarkerElement is not available or no Map ID
+          // Classic Marker works without Map ID and provides full functionality
           return (
             <DriverMarker
               key={driver.id}
               driver={driver}
               isSelected={selectedDriver?.id === driver.id}
-              onSelect={() => setSelectedDriver(driver)}
+              onSelect={() => handleDriverSelect(driver)}
               isDisconnected={driver.is_online && !presenceMap[driver.id]}
               google={window.google}
             />
           )
         })}
+
+        {/* Route Visualization - Show routes for selected trip */}
+        {isLoaded && typeof window !== 'undefined' && window.google && selectedTripId && (() => {
+          const selectedTrip = trips.find(t => t.id === selectedTripId)
+          if (!selectedTrip) return null
+          
+          const tripDriver = selectedTrip.driver_id 
+            ? drivers.find(d => d.id === selectedTrip.driver_id)
+            : null
+          
+          if (!tripDriver) return null
+          
+          return (
+            <RouteVisualization
+              key={selectedTrip.id}
+              trip={selectedTrip}
+              driver={tripDriver}
+              google={window.google}
+            />
+          )
+        })()}
 
         {/* Stats overlay with glassmorphism */}
         <div className="absolute top-4 left-4 glass-card-light rounded-2xl p-4 shadow-xl backdrop-blur-xl bg-white/80 border border-white/20" style={{ backdropFilter: 'blur(20px)' }}>
@@ -635,11 +802,11 @@ export function AdminLiveMapClient({
       <DriverDetailSheet
         driver={selectedDriver}
         open={!!selectedDriver}
-        onOpenChange={(open) => !open && setSelectedDriver(null)}
+        onOpenChange={(open) => !open && handleDriverSelect(null)}
         hasActiveTrip={selectedDriver ? (driverTrips[selectedDriver.id]?.hasActiveTrip || false) : false}
         onAssignTrip={(driverId) => {
           console.log('Assign trip to driver:', driverId)
-          setSelectedDriver(null)
+          handleDriverSelect(null)
           // TODO: Implement trip assignment
         }}
       />

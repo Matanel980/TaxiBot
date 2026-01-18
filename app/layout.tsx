@@ -14,6 +14,16 @@ const heebo = Heebo({
 export const metadata: Metadata = {
   title: "TaxiFlow - מערכת ניהול מוניות",
   description: "מערכת ניהול מוניות מקצועית",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "TaxiFlow",
+  },
+};
+
+export const viewport = {
+  themeColor: "#F7C948",
 };
 
 export default function RootLayout({

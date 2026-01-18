@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic'
 
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase'
+import { useStation } from '@/lib/hooks/useStation'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { MapPin } from 'lucide-react'
@@ -14,16 +15,25 @@ export default function DriverTripsPage() {
   const [trips, setTrips] = useState<Trip[]>([])
   const [loading, setLoading] = useState(true)
   const supabase = createClient()
+  const { stationId } = useStation()
 
   useEffect(() => {
+    // Don't fetch if station_id is not loaded
+    if (!stationId) {
+      console.log('[Driver Trips] Waiting for station_id...')
+      return
+    }
+
     const fetchTrips = async () => {
       const { data: { user } } = await supabase.auth.getUser()
       
       if (user) {
+        // STATION-AWARE: Filter trips by driver_id AND station_id (defense-in-depth)
         const { data, error: tripsError } = await supabase
           .from('trips')
-          .select('id, customer_phone, pickup_address, destination_address, status, driver_id, created_at, updated_at')
+          .select('id, customer_phone, pickup_address, destination_address, status, driver_id, created_at, updated_at, station_id')
           .eq('driver_id', user.id)
+          .eq('station_id', stationId) // STATION FILTER
           .order('created_at', { ascending: false })
           .limit(20)
 
@@ -31,11 +41,12 @@ export default function DriverTripsPage() {
           console.error('[Driver Trips] Error fetching trips:', tripsError)
           if (tripsError.message?.includes('406') || tripsError.message?.includes('Not Acceptable')) {
             console.error('[Driver Trips] 406 Error - Attempting fallback...')
-            // Try fallback
+            // Try fallback (still station-aware)
             const { data: fallbackData } = await supabase
               .from('trips')
               .select('id, status, driver_id, created_at')
               .eq('driver_id', user.id)
+              .eq('station_id', stationId) // STATION FILTER
               .order('created_at', { ascending: false })
               .limit(20)
             
@@ -65,7 +76,7 @@ export default function DriverTripsPage() {
     }
 
     fetchTrips()
-  }, [supabase])
+  }, [supabase, stationId]) // Add stationId dependency
 
   if (loading) {
     return (

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerSupabaseClient } from '@/lib/supabase-server'
+import { normalizeIsraeliPhone } from '@/lib/phone-utils'
 
 // GET - Fetch single driver
 export async function GET(
@@ -79,11 +80,22 @@ export async function PUT(
       )
     }
 
+    // CRITICAL: Normalize phone number using SINGLE SOURCE OF TRUTH
+    let normalizedPhone: string
+    try {
+      normalizedPhone = normalizeIsraeliPhone(phone)
+    } catch (normalizeError: any) {
+      return NextResponse.json(
+        { success: false, error: normalizeError.message || 'מספר טלפון לא תקין' },
+        { status: 400 }
+      )
+    }
+
     const { data, error } = await supabase
       .from('profiles')
       .update({
         full_name,
-        phone,
+        phone: normalizedPhone, // E.164 format from normalizeIsraeliPhone()
         vehicle_number: vehicle_number || null,
         is_approved: is_approved !== false,
         updated_at: new Date().toISOString()

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase'
+import { useStation } from '@/lib/hooks/useStation'
 import type { Trip } from '@/lib/supabase'
 
 interface UseRealtimeTripsOptions {
@@ -11,21 +12,24 @@ interface UseRealtimeTripsOptions {
 export function useRealtimeTrips({ driverId }: UseRealtimeTripsOptions) {
   const [pendingTrip, setPendingTrip] = useState<Trip | null>(null)
   const supabase = createClient()
+  const { stationId } = useStation()
 
   useEffect(() => {
-    if (!driverId) {
+    if (!driverId || !stationId) {
       setPendingTrip(null)
       return
     }
 
     // Fetch initial pending trip with explicit columns
+    // STATION-AWARE: Filter by driver_id AND station_id (defense-in-depth)
     const fetchPendingTrip = async () => {
       try {
         const { data, error } = await supabase
           .from('trips')
-          .select('id, customer_phone, pickup_address, destination_address, status, driver_id, created_at, updated_at')
+          .select('id, customer_phone, pickup_address, destination_address, status, driver_id, created_at, updated_at, station_id')
           .eq('driver_id', driverId)
           .eq('status', 'pending')
+          .eq('station_id', stationId) // STATION FILTER
           .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle() // Use maybeSingle() instead of single() to handle no rows gracefully
@@ -38,12 +42,13 @@ export function useRealtimeTrips({ driverId }: UseRealtimeTripsOptions) {
             return
           } else if (error.message?.includes('406') || error.message?.includes('Not Acceptable')) {
             console.error('[useRealtimeTrips] 406 Error - Attempting fallback...')
-            // Try fallback with minimal columns
+            // Try fallback with minimal columns (still station-aware)
             const { data: fallbackData } = await supabase
               .from('trips')
               .select('id, status, driver_id')
               .eq('driver_id', driverId)
               .eq('status', 'pending')
+              .eq('station_id', stationId) // STATION FILTER
               .order('created_at', { ascending: false })
               .limit(1)
               .maybeSingle()
@@ -114,7 +119,7 @@ export function useRealtimeTrips({ driverId }: UseRealtimeTripsOptions) {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [driverId, supabase])
+  }, [driverId, stationId, supabase]) // Add stationId dependency
 
   const clearPendingTrip = () => {
     setPendingTrip(null)

@@ -11,10 +11,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Check if user is admin
+    // Check if user is admin and get station_id
     const { data: profile } = await supabase
       .from('profiles')
-      .select('role')
+      .select('role, station_id')
       .eq('id', user.id)
       .single()
 
@@ -22,17 +22,25 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    // Try PostGIS table first, fallback to legacy table
+    if (!profile?.station_id) {
+      return NextResponse.json({ error: 'User not assigned to a station' }, { status: 403 })
+    }
+
+    const stationId = profile.station_id
+
+    // Try PostGIS table first, fallback to legacy table - STATION-AWARE
     let { data: zones, error } = await supabase
       .from('zones_postgis')
       .select('*')
+      .eq('station_id', stationId) // STATION FILTER
       .order('name')
 
-    // If PostGIS table doesn't exist or is empty, try legacy table
+    // If PostGIS table doesn't exist or is empty, try legacy table - STATION-AWARE
     if (error || !zones || zones.length === 0) {
       const { data: legacyZones } = await supabase
         .from('zones')
         .select('*')
+        .eq('station_id', stationId) // STATION FILTER
         .order('name')
 
       if (legacyZones && legacyZones.length > 0) {
@@ -41,6 +49,7 @@ export async function GET(request: NextRequest) {
           .from('profiles')
           .select('current_zone, is_online')
           .eq('role', 'driver')
+          .eq('station_id', stationId) // STATION FILTER
 
         const zonesWithCounts = legacyZones.map(zone => ({
           ...zone,
@@ -57,11 +66,12 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 400 })
     }
 
-    // Get driver counts per zone
+    // Get driver counts per zone - STATION-AWARE
     const { data: drivers } = await supabase
       .from('profiles')
       .select('current_zone, is_online')
       .eq('role', 'driver')
+      .eq('station_id', stationId) // STATION FILTER
 
     // Convert to GeoJSON FeatureCollection
     const featureCollection: GeoJSON.FeatureCollection = {
@@ -100,10 +110,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Check if user is admin
+    // Check if user is admin and get station_id
     const { data: profile } = await supabase
       .from('profiles')
-      .select('role')
+      .select('role, station_id')
       .eq('id', user.id)
       .single()
 
@@ -111,6 +121,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
+    if (!profile?.station_id) {
+      return NextResponse.json({ error: 'User not assigned to a station' }, { status: 403 })
+    }
+
+    const stationId = profile.station_id
     const { name, wkt, color, center_lat, center_lng, area_sqm } = await request.json()
 
     if (!wkt) {

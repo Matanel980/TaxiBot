@@ -4,6 +4,7 @@ import { ZoneManagement } from '@/components/admin/ZoneManagement'
 import { ZoneEditor } from '@/components/admin/ZoneEditor'
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase'
+import { useStation } from '@/lib/hooks/useStation'
 import type { Profile, ZonePostGIS } from '@/lib/supabase'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { featureToZone } from '@/lib/spatial-utils'
@@ -15,25 +16,35 @@ export default function AdminZonesPage() {
   const [loading, setLoading] = useState(true)
   const supabase = createClient()
   const toast = useToast()
+  const { stationId, loading: stationLoading } = useStation()
 
   const fetchZones = async () => {
+    // CRITICAL: Don't fetch if station_id is not loaded
+    if (!stationId) {
+      console.log('[Admin Zones] Waiting for station_id...')
+      return
+    }
+
     try {
-      // First try PostGIS table
+      // STATION-AWARE: Filter zones by station_id
       const { data: postgisData, error: postgisError } = await supabase
         .from('zones_postgis')
         .select('*')
+        .eq('station_id', stationId) // STATION FILTER
 
       if (postgisData && postgisData.length > 0) {
         setZones(postgisData as ZonePostGIS[])
         return
       }
 
-      // Fallback: fetch via API (which returns GeoJSON)
+      // Fallback: fetch via API (which returns GeoJSON and filters by station_id)
       const response = await fetch('/api/zones')
       const featureCollection = await response.json()
       
       if (featureCollection.type === 'FeatureCollection') {
-        const zonesFromFeatures = featureCollection.features.map((f: any) => featureToZone(f))
+        const zonesFromFeatures = featureCollection.features
+          .map((f: any) => featureToZone(f))
+          .filter((zone: ZonePostGIS) => zone.station_id === stationId) // STATION FILTER
         setZones(zonesFromFeatures)
       }
     } catch (err) {
@@ -45,9 +56,23 @@ export default function AdminZonesPage() {
     let isMounted = true
 
     const fetchData = async () => {
+      // CRITICAL: Don't fetch if station_id is not loaded
+      if (!stationId) {
+        console.log('[Admin Zones] Waiting for station_id...')
+        if (isMounted) {
+          setLoading(false)
+        }
+        return
+      }
+
       try {
+        // STATION-AWARE: Filter drivers by station_id
         const [driversResult] = await Promise.all([
-          supabase.from('profiles').select('*').eq('role', 'driver')
+          supabase
+            .from('profiles')
+            .select('*')
+            .eq('role', 'driver')
+            .eq('station_id', stationId) // STATION FILTER
         ])
 
         await fetchZones()
@@ -71,14 +96,26 @@ export default function AdminZonesPage() {
     return () => {
       isMounted = false
     }
-  }, [supabase])
+  }, [supabase, stationId]) // Add stationId dependency
 
-  if (loading) {
+  if (stationLoading || loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
           <div className="text-5xl mb-4 animate-bounce">🗺️</div>
-          <p className="text-lg text-gray-600">טוען אזורים...</p>
+          <p className="text-lg text-gray-600">
+            {stationLoading ? 'מזהה תחנה...' : 'טוען אזורים...'}
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!stationId) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <p className="text-lg text-red-600">שגיאה: משתמש לא משויך לתחנה</p>
         </div>
       </div>
     )
