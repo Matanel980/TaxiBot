@@ -105,61 +105,131 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
         // Use UPDATE instead of UPSERT - profile must exist after migration
         // This ensures we're updating the correct profile with the migrated UUID
         // Add timeout protection to prevent hanging on network issues
-        const updatePromise = supabase
+        const updateQuery = supabase
           .from('profiles')
           .update(updateData)
           .eq('id', driverId) // CRITICAL: Use migrated UUID (auth.user.id)
           .select('id, latitude, longitude')
           .single()
         
+        // Wrap Supabase query in a Promise for Promise.race
+        // Convert PromiseLike to Promise and handle errors
+        const updatePromise = Promise.resolve(updateQuery).then((response) => response).catch((err) => {
+          // Convert Supabase errors to a consistent format
+          throw err
+        })
+        
         // Race with timeout (5 seconds) to prevent hanging
         const timeoutPromise = new Promise<never>((_, reject) => {
           setTimeout(() => reject(new Error('Location update timeout after 5 seconds')), 5000)
         })
         
-        const { data, error } = await Promise.race([updatePromise, timeoutPromise])
-
-        if (error) {
-          // Enhanced error logging with full details
-          console.error('[useGeolocation] Error updating location:', {
-            error: error.message || 'Unknown error',
-            code: error.code || 'NO_CODE',
-            details: error.details || 'No details',
-            hint: error.hint || 'No hint',
-            driverId: driverId, // Log the UUID being used
-            latitude,
-            longitude,
-            updateData
-          })
-
-          // Handle specific error codes
-          if (error.code === 'PGRST116' || error.message?.includes('0 rows')) {
-            console.error('[useGeolocation] Profile not found - ID may not be migrated correctly:', {
+        // Wrap Promise.race to handle both Supabase response and timeout errors
+        let result: { data: any; error: any } | null = null
+        let isTimeout = false
+        
+        try {
+          result = await Promise.race([updatePromise, timeoutPromise])
+        } catch (raceError: any) {
+          // Promise.race rejects if timeout promise wins or if updatePromise throws
+          isTimeout = raceError instanceof Error && raceError.message?.includes('timeout')
+          
+          if (isTimeout) {
+            console.warn('[useGeolocation] Location update timeout - network may be slow:', {
               driverId,
-              message: 'Profile with this ID does not exist. Ensure profile migration completed successfully.'
+              message: raceError.message || String(raceError),
+              latitude,
+              longitude
             })
-          } else if (error.code === '42501' || error.message?.includes('permission denied') || error.message?.includes('RLS')) {
-            console.error('[useGeolocation] RLS policy violation - check profiles_update_own policy:', {
+          } else {
+            // Other error from Supabase or unexpected error
+            const errorMessage = raceError?.message || String(raceError) || 'Unknown error'
+            const errorName = raceError?.name || raceError?.constructor?.name || 'Error'
+            const errorType = typeof raceError
+            
+            console.error('[useGeolocation] Error updating location:', {
+              error: errorMessage,
+              errorName: errorName,
+              errorType: errorType,
+              errorString: String(raceError),
+              errorValue: raceError,
               driverId,
-              message: 'Row Level Security policy may be blocking the update. Verify auth.uid() = id policy exists.'
+              latitude,
+              longitude,
+              updateData
             })
-          } else if (error.code === '23505' || error.message?.includes('409') || error.message?.includes('Conflict')) {
-            console.warn('[useGeolocation] Database write conflict (409) - skipping. This is normal during concurrent updates.')
+
+            // Handle specific error codes if available
+            if (raceError?.code === 'PGRST116' || errorMessage?.includes('0 rows')) {
+              console.error('[useGeolocation] Profile not found - ID may not be migrated correctly:', {
+                driverId,
+                message: 'Profile with this ID does not exist. Ensure profile migration completed successfully.'
+              })
+            } else if (raceError?.code === '42501' || errorMessage?.includes('permission denied') || errorMessage?.includes('RLS')) {
+              console.error('[useGeolocation] RLS policy violation - check profiles_update_own policy:', {
+                driverId,
+                message: 'Row Level Security policy may be blocking the update. Verify auth.uid() = id policy exists.'
+              })
+            } else if (raceError?.code === '23505' || errorMessage?.includes('409') || errorMessage?.includes('Conflict')) {
+              console.warn('[useGeolocation] Database write conflict (409) - skipping. This is normal during concurrent updates.')
+            }
           }
-        } else if (data) {
-          console.log('[useGeolocation] Location written to database successfully:', {
-            driverId: data.id,
-            latitude: data.latitude,
-            longitude: data.longitude,
-            timestamp: new Date().toISOString()
-          })
+        }
+
+        // Process result if Promise.race resolved successfully (not timeout)
+        if (result && !isTimeout) {
+          const { data, error } = result
+          
+          if (error) {
+            // Enhanced error logging with full details
+            console.error('[useGeolocation] Error updating location:', {
+              error: error?.message || String(error) || 'Unknown error',
+              code: error?.code || 'NO_CODE',
+              details: error?.details || 'No details',
+              hint: error?.hint || 'No hint',
+              errorType: typeof error,
+              driverId: driverId, // Log the UUID being used
+              latitude,
+              longitude,
+              updateData
+            })
+
+            // Handle specific error codes
+            if (error?.code === 'PGRST116' || error?.message?.includes('0 rows')) {
+              console.error('[useGeolocation] Profile not found - ID may not be migrated correctly:', {
+                driverId,
+                message: 'Profile with this ID does not exist. Ensure profile migration completed successfully.'
+              })
+            } else if (error?.code === '42501' || error?.message?.includes('permission denied') || error?.message?.includes('RLS')) {
+              console.error('[useGeolocation] RLS policy violation - check profiles_update_own policy:', {
+                driverId,
+                message: 'Row Level Security policy may be blocking the update. Verify auth.uid() = id policy exists.'
+              })
+            } else if (error?.code === '23505' || error?.message?.includes('409') || error?.message?.includes('Conflict')) {
+              console.warn('[useGeolocation] Database write conflict (409) - skipping. This is normal during concurrent updates.')
+            }
+          } else if (data) {
+            console.log('[useGeolocation] Location written to database successfully:', {
+              driverId: data.id,
+              latitude: data.latitude,
+              longitude: data.longitude,
+              timestamp: new Date().toISOString()
+            })
+          }
         }
       } catch (error: any) {
-        // Enhanced exception logging
+        // Enhanced exception logging - handle any error type robustly
+        const errorMessage = error?.message || String(error) || 'Unknown exception'
+        const errorName = error?.name || error?.constructor?.name || 'UnknownError'
+        const errorStack = error?.stack || 'No stack trace available'
+        const errorType = typeof error
+        
         console.error('[useGeolocation] Exception updating location:', {
-          error: error.message || 'Unknown exception',
-          errorName: error.name || 'UnknownError',
-          stack: error.stack,
+          error: errorMessage,
+          errorName: errorName,
+          errorType: errorType,
+          errorString: String(error),
+          stack: errorStack,
           driverId,
           latitude,
           longitude
