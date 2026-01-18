@@ -23,13 +23,21 @@ const MapComponent = dynamic(
 
 interface DriverMapProps {
   userPosition?: { lat: number; lng: number } | null
+  heading?: number | null // Driver heading/orientation in degrees (0-360)
   className?: string
+  onLocationMarked?: (location: { lat: number; lng: number; address?: string }) => void
+  onAddressSearch?: (address: string) => void
 }
 
-export function DriverMap({ userPosition, className = '' }: DriverMapProps) {
+export function DriverMap({ userPosition, heading, className = '', onLocationMarked, onAddressSearch }: DriverMapProps) {
   return (
     <div className={`absolute inset-0 z-0 ${className}`}>
-      <MapComponent userPosition={userPosition} />
+      <MapComponent 
+        userPosition={userPosition}
+        heading={heading}
+        onLocationMarked={onLocationMarked}
+        onAddressSearch={onAddressSearch}
+      />
     </div>
   )
 }

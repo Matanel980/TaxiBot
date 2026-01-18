@@ -58,3 +58,10 @@
 - Check that your user has `role = 'admin'` in the profiles table
 - Verify RLS policies are correctly applied
 
+
+
+
+
+
+
+

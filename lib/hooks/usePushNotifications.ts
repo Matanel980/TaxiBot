@@ -169,7 +169,7 @@ export function usePushNotifications({
 
       console.log('[usePushNotifications] ✅ Push subscription created:', {
         endpoint: subscription.endpoint.substring(0, 50) + '...',
-        keys: subscription.getKey ? 'present' : 'missing'
+        keys: subscription.getKey('p256dh') && subscription.getKey('auth') ? 'present' : 'missing'
       })
 
       subscriptionRef.current = subscription

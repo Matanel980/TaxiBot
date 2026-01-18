@@ -2,11 +2,12 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, Users, MapPin, History } from 'lucide-react'
+import { LayoutDashboard, Users, MapPin, History, Map } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
   { href: '/admin/dashboard', icon: LayoutDashboard, label: 'דאשבורד' },
+  { href: '/admin/map', icon: Map, label: 'מפה מלאה' },
   { href: '/admin/drivers', icon: Users, label: 'נהגים' },
   { href: '/admin/zones', icon: MapPin, label: 'אזורים' },
   { href: '/admin/history', icon: History, label: 'היסטוריה' },

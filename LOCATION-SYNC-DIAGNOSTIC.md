@@ -175,3 +175,10 @@ filter: 'role=eq.driver'
 3. `components/admin/AdminLiveMapClient.tsx` - Marker rendering (lines 574-595)
 4. `supabase-migration.sql` - RLS policies (lines 123-130)
 
+
+
+
+
+
+
+

@@ -724,6 +724,10 @@ export function AdminLiveMapClient({
           
           // Use AdvancedMarkerElement only if Map ID is available
           if (canUseAdvancedMarkers) {
+            // TypeScript guard: ensure mapRef.current is not null
+            const currentMap = mapRef.current
+            if (!currentMap) return null
+            
             return (
               <AdvancedDriverMarker
                 key={driver.id}
@@ -732,7 +736,7 @@ export function AdminLiveMapClient({
                 onSelect={() => handleDriverSelect(driver)}
                 isDisconnected={driver.is_online && !presenceMap[driver.id]}
                 google={window.google}
-                map={mapRef.current}
+                map={currentMap}
               />
             )
           }

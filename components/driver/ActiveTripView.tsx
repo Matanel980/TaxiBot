@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Phone, CheckCircle, MapPin } from 'lucide-react'
+import { Phone, CheckCircle, MapPin, Navigation } from 'lucide-react'
 import { motion } from 'framer-motion'
 import type { Trip } from '@/lib/supabase'
 
@@ -55,6 +55,18 @@ export function ActiveTripView({ trip, onStatusUpdate }: ActiveTripViewProps) {
             </div>
 
             <div className="flex items-center gap-2 pt-4 border-t border-slate-700">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => {
+                  // Open Google Maps with directions to pickup address
+                  const encodedAddress = encodeURIComponent(trip.pickup_address)
+                  window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodedAddress}`, '_blank')
+                }}
+              >
+                <Navigation size={16} className="ml-2" />
+                ניווט
+              </Button>
               <Button
                 variant="outline"
                 className="flex-1"
@@ -115,5 +127,8 @@ export function ActiveTripView({ trip, onStatusUpdate }: ActiveTripViewProps) {
     </div>
   )
 }
+
+
+
 
 

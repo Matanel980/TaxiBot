@@ -95,9 +95,9 @@ export async function getDirectionsRoute(
         // Extract path from route steps (most reliable method)
         const path: Array<{ lat: number; lng: number }> = []
         
-        if (route.overview_polyline && route.overview_polyline.points) {
+        if (route.overview_polyline && typeof route.overview_polyline === 'string') {
           // Use overview polyline (decoded)
-          const decodedPath = google.maps.geometry?.encoding?.decodePath(route.overview_polyline.points)
+          const decodedPath = google.maps.geometry?.encoding?.decodePath(route.overview_polyline)
           if (decodedPath && decodedPath.length > 0) {
             decodedPath.forEach(point => {
               path.push({ lat: point.lat(), lng: point.lng() })

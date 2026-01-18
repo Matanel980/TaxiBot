@@ -135,3 +135,10 @@ Driver location updates are not appearing on the Admin Map in real-time, even th
 3. `components/admin/AdminLiveMapClient.tsx` - Added debug logging
 4. `scripts/enable-realtime-profiles.sql` - New verification script
 
+
+
+
+
+
+
+

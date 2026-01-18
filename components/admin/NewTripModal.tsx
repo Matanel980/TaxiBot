@@ -1,12 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { BottomSheet } from '@/components/ui/bottom-sheet'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useMediaQuery } from '@/lib/hooks/useMediaQuery'
+import { useStation } from '@/lib/hooks/useStation'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 
@@ -22,15 +23,158 @@ export function NewTripModal({ open, onOpenChange }: NewTripModalProps) {
   const [destinationAddress, setDestinationAddress] = useState('')
   const [price, setPrice] = useState('')
   const [saving, setSaving] = useState(false)
+  const [geocoding, setGeocoding] = useState(false)
+  const pickupTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const isMobile = useMediaQuery('(max-width: 768px)')
   const supabase = createClient()
   const router = useRouter()
+  const { stationId } = useStation()
+
+  // Geocode pickup address and detect zone
+  const geocodePickupAddress = async (address: string) => {
+    if (!address || address.length < 3) return null
+
+    setGeocoding(true)
+    try {
+      const response = await fetch('/api/geocode', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({ address }),
+      })
+
+      if (!response.ok) {
+        console.error('Geocoding failed:', await response.text())
+        return null
+      }
+
+      const result = await response.json()
+      return result
+    } catch (error) {
+      console.error('Geocoding error:', error)
+      return null
+    } finally {
+      setGeocoding(false)
+    }
+  }
+
+  // Detect zone for coordinates
+  const detectZone = async (lat: number, lng: number) => {
+    try {
+      const response = await fetch('/api/zones/check-point', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({ lat, lng }),
+      })
+
+      if (!response.ok) return null
+
+      const result = await response.json()
+      return result.zone?.id || null
+    } catch (error) {
+      console.error('Zone detection error:', error)
+      return null
+    }
+  }
+
+  // Geocode destination address
+  const geocodeDestinationAddress = async (address: string) => {
+    if (!address || address.length < 3) return null
+
+    setGeocoding(true)
+    try {
+      const response = await fetch('/api/geocode', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({ address }),
+      })
+
+      if (!response.ok) {
+        console.error('Geocoding failed:', await response.text())
+        return null
+      }
+
+      const result = await response.json()
+      return result
+    } catch (error) {
+      console.error('Geocoding error:', error)
+      return null
+    } finally {
+      setGeocoding(false)
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
 
     try {
+      // MISSION-CRITICAL: Geocode BOTH pickup AND destination - NO TRIP WITHOUT COORDINATES
+      let pickupLat: number | null = null
+      let pickupLng: number | null = null
+      let destinationLat: number | null = null
+      let destinationLng: number | null = null
+      let zoneId: string | null = null
+
+      // Geocode pickup address (REQUIRED)
+      if (!pickupAddress) {
+        alert('כתובת איסוף היא חובה')
+        setSaving(false)
+        return
+      }
+
+      const pickupGeocodeResult = await geocodePickupAddress(pickupAddress)
+      if (!pickupGeocodeResult || 'error' in pickupGeocodeResult) {
+        alert(`שגיאה במיקום כתובת האיסוף: ${pickupGeocodeResult?.error || 'לא ניתן למצוא את המיקום'}`)
+        setSaving(false)
+        return
+      }
+      pickupLat = pickupGeocodeResult.lat
+      pickupLng = pickupGeocodeResult.lng
+
+      // Detect zone for pickup
+      if (pickupLat && pickupLng) {
+        zoneId = await detectZone(pickupLat, pickupLng)
+      }
+
+      // Geocode destination address (REQUIRED)
+      if (!destinationAddress) {
+        alert('כתובת יעד היא חובה')
+        setSaving(false)
+        return
+      }
+
+      const destinationGeocodeResult = await geocodeDestinationAddress(destinationAddress)
+      if (!destinationGeocodeResult || 'error' in destinationGeocodeResult) {
+        alert(`שגיאה במיקום כתובת היעד: ${destinationGeocodeResult?.error || 'לא ניתן למצוא את המיקום'}`)
+        setSaving(false)
+        return
+      }
+      destinationLat = destinationGeocodeResult.lat
+      destinationLng = destinationGeocodeResult.lng
+
+      // VALIDATE: Both coordinates must be present
+      if (!pickupLat || !pickupLng || !destinationLat || !destinationLng) {
+        alert('שגיאה: לא ניתן ליצור נסיעה ללא קואורדינטות מלאות')
+        setSaving(false)
+        return
+      }
+
+      // VALIDATE: Station ID must be present
+      if (!stationId) {
+        alert('שגיאה: לא ניתן ליצור נסיעה ללא תחנה. אנא פנה למנהל המערכת.')
+        setSaving(false)
+        return
+      }
+
       const { data, error } = await supabase
         .from('trips')
         .insert({
@@ -38,6 +182,12 @@ export function NewTripModal({ open, onOpenChange }: NewTripModalProps) {
           pickup_address: pickupAddress,
           destination_address: destinationAddress,
           status: 'pending',
+          pickup_lat: pickupLat,
+          pickup_lng: pickupLng,
+          destination_lat: destinationLat,
+          destination_lng: destinationLng,
+          zone_id: zoneId,
+          station_id: stationId, // AUTO-ASSIGN STATION
         })
         .select()
         .single()
@@ -62,6 +212,7 @@ export function NewTripModal({ open, onOpenChange }: NewTripModalProps) {
       alert(`שגיאה בלתי צפויה: ${err.message}`)
     } finally {
       setSaving(false)
+      setGeocoding(false)
     }
   }
 
@@ -135,10 +286,10 @@ export function NewTripModal({ open, onOpenChange }: NewTripModalProps) {
         </Button>
         <Button
           type="submit"
-          disabled={saving || !customerPhone || !pickupAddress || !destinationAddress}
+          disabled={saving || geocoding || !customerPhone || !pickupAddress || !destinationAddress}
           className="flex-1 sm:flex-initial"
         >
-          {saving ? 'יוצר...' : 'צור נסיעה'}
+          {saving || geocoding ? (geocoding ? 'מאתר מיקום...' : 'יוצר...') : 'צור נסיעה'}
         </Button>
       </div>
     </form>

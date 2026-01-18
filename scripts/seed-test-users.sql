@@ -47,3 +47,10 @@ SELECT id, phone, role, full_name, vehicle_number, car_type
 FROM profiles 
 WHERE phone IN ('+972526099607', '+972509800301');
 
+
+
+
+
+
+
+

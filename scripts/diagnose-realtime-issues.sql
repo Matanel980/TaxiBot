@@ -132,3 +132,10 @@ FROM profiles
 WHERE role = 'driver'
   AND is_online = true;
 
+
+
+
+
+
+
+

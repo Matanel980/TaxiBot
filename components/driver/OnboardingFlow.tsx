@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { User, Car, Hash, Phone, ArrowRight, CheckCircle2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase'
 import { toast } from 'sonner'
+import { normalizeIsraeliPhone } from '@/lib/phone-utils'
 
 interface OnboardingFlowProps {
   userId: string
@@ -43,13 +44,25 @@ export function OnboardingFlow({ userId, initialPhone, onComplete }: OnboardingF
   const handleSubmit = async () => {
     setLoading(true)
     try {
+      // CRITICAL: Normalize phone number using SINGLE SOURCE OF TRUTH
+      let normalizedPhone: string
+      try {
+        normalizedPhone = normalizeIsraeliPhone(formData.phone)
+      } catch (normalizeError: any) {
+        toast.error('מספר טלפון לא תקין', {
+          description: normalizeError.message || 'אנא הזן מספר טלפון ישראלי תקין',
+        })
+        setLoading(false)
+        return
+      }
+
       const { error } = await supabase
         .from('profiles')
         .update({
           full_name: formData.full_name,
           vehicle_number: formData.vehicle_number,
           car_type: formData.car_type,
-          phone: formData.phone,
+          phone: normalizedPhone, // E.164 format from normalizeIsraeliPhone()
           updated_at: new Date().toISOString()
         })
         .eq('id', userId)
@@ -65,7 +78,7 @@ export function OnboardingFlow({ userId, initialPhone, onComplete }: OnboardingF
         full_name: formData.full_name,
         vehicle_number: formData.vehicle_number,
         car_type: formData.car_type,
-        phone: formData.phone
+        phone: normalizedPhone // Use normalized phone
       })
     } catch (error: any) {
       console.error('Onboarding error:', error)

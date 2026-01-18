@@ -385,9 +385,13 @@ export default function AdminDashboard() {
               
               // Show toast notification for status changes
               if (statusChanged && wasOffline && isNowOnline) {
-                toast.success('נהג התחבר', `${updatedDriver?.full_name || 'נהג'} עכשיו פעיל`)
+                toast.success('נהג התחבר', {
+                  description: `${updatedDriver?.full_name || 'נהג'} עכשיו פעיל`
+                })
               } else if (statusChanged && !isNowOnline) {
-                toast.info('נהג התנתק', `${updatedDriver?.full_name || 'נהג'} עכשיו לא פעיל`)
+                toast.info('נהג התנתק', {
+                  description: `${updatedDriver?.full_name || 'נהג'} עכשיו לא פעיל`
+                })
               }
               
               // Return new state with updated drivers array
@@ -407,7 +411,7 @@ export default function AdminDashboard() {
             })
             
             // Only refetch for structural changes (new driver added or removed)
-            fetchData(isMountedRef.current)
+            fetchData(isMountedRef)
           }
         }
       )
@@ -438,7 +442,7 @@ export default function AdminDashboard() {
           if (newStationId === stationId || payload.eventType === 'DELETE') {
             console.log('[Admin Dashboard] Trip change:', payload.eventType, payload.new)
             if (isMountedRef.current) {
-              fetchData(isMountedRef.current)
+              fetchData(isMountedRef)
             }
           }
         }
@@ -593,14 +597,18 @@ export default function AdminDashboard() {
   const handleCancelTrip = async (tripId: string) => {
     // TODO: Implement trip cancellation
     console.log('Cancel trip:', tripId)
-    toast?.success('בוטל', 'הנסיעה בוטלה')
+    toast.success('בוטל', {
+      description: 'הנסיעה בוטלה'
+    })
     setSelectedTripId(null)
   }
 
   const handleReassignTrip = async (tripId: string) => {
     // TODO: Implement trip reassignment
     console.log('Reassign trip:', tripId)
-    toast?.success('הוקצה מחדש', 'הנסיעה הוקצתה מחדש')
+    toast.success('הוקצה מחדש', {
+      description: 'הנסיעה הוקצתה מחדש'
+    })
     setSelectedTripId(null)
   }
 
@@ -763,3 +771,4 @@ export default function AdminDashboard() {
     </div>
   )
 }
+
