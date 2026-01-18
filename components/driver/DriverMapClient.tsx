@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useMemo, useCallback, useState } from 'react'
-import { GoogleMap, Marker, InfoWindow, useJsApiLoader } from '@react-google-maps/api'
+import { GoogleMap, Marker, InfoWindow, Circle, useJsApiLoader } from '@react-google-maps/api'
 import { darkMapStyle, ISRAEL_CENTER, calculateDistance, GOOGLE_MAPS_LOADER_OPTIONS, getAddressFromCoords, createTaxiIcon } from '@/lib/google-maps-loader'
 import { Button } from '@/components/ui/button'
 import { MapPin, Maximize2, Minimize2, Navigation2, X, Search, MapPin as MapPinIcon } from 'lucide-react'
@@ -426,14 +426,38 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
         onUnmount={onUnmount}
         onClick={handleMapClick}
       >
-        {/* Driver's current position marker */}
+        {/* Driver's current position marker with GPS accuracy circle */}
         {userPosition && driverIcon && (
-          <Marker
-            position={{ lat: userPosition.lat, lng: userPosition.lng }}
-            icon={driverIcon}
-            title="המיקום שלך"
-            onClick={focusOnSelf}
-          />
+          <>
+            <Marker
+              position={{ lat: userPosition.lat, lng: userPosition.lng }}
+              icon={driverIcon}
+              title="המיקום שלך"
+              onClick={focusOnSelf}
+            />
+            {/* GPS Accuracy Circle - Visual indicator of location precision */}
+            {(() => {
+              // Default accuracy: ~10 meters (typical GPS accuracy)
+              const accuracyMeters = 10
+              const accuracyRadius = accuracyMeters / 111000 // Convert meters to degrees (approximate)
+              
+              return (
+                <Circle
+                  center={{ lat: userPosition.lat, lng: userPosition.lng }}
+                  radius={accuracyMeters}
+                  options={{
+                    fillColor: '#3B82F6',
+                    fillOpacity: 0.15,
+                    strokeColor: '#3B82F6',
+                    strokeOpacity: 0.5,
+                    strokeWeight: 2,
+                    clickable: false,
+                    zIndex: 1,
+                  }}
+                />
+              )
+            })()}
+          </>
         )}
 
         {/* Clicked position marker with address info */}

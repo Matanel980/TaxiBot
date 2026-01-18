@@ -40,6 +40,7 @@ export default function AdminDashboard() {
   const [newTripOpen, setNewTripOpen] = useState(false)
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'dashboard' | 'management'>('dashboard')
+  const [driverSearchQuery, setDriverSearchQuery] = useState('') // Search filter for drivers
   const supabase = createClient()
   const { stationId, loading: stationLoading, error: stationError } = useStation()
 
@@ -308,6 +309,17 @@ export default function AdminDashboard() {
     const isMountedRef = { current: true }
     const timeoutRefs: NodeJS.Timeout[] = []
 
+    // CRITICAL: Handle background tab recovery - resubscribe when tab regains focus
+    const handleVisibilityChange = () => {
+      if (!document.hidden && isMountedRef.current) {
+        console.log('[Admin Dashboard] Tab regained focus - refreshing data and subscriptions')
+        // Refetch data to ensure freshness
+        fetchData(isMountedRef)
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
     // Initial fetch
     fetchData(isMountedRef)
 
@@ -540,6 +552,7 @@ export default function AdminDashboard() {
 
     return () => {
       isMountedRef.current = false
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
       // CRITICAL: Clear all timeouts to prevent memory leaks
       timeoutRefs.forEach(timeoutId => clearTimeout(timeoutId))
       timeoutRefs.length = 0
@@ -615,12 +628,18 @@ export default function AdminDashboard() {
   // Show loading if station is still loading
   if (stationLoading || data.loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-slate-900">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-          <p className="text-slate-300">
-            {stationLoading ? 'מזהה תחנה...' : 'טוען...'}
-          </p>
+      <div className="flex items-center justify-center min-h-screen bg-slate-900 p-6">
+        <div className="w-full max-w-4xl space-y-4">
+          {/* Skeleton Loader - Premium feel */}
+          <div className="space-y-3">
+            <div className="h-12 bg-slate-800 rounded-lg animate-pulse" />
+            <div className="grid grid-cols-3 gap-4">
+              <div className="h-24 bg-slate-800 rounded-xl animate-pulse" />
+              <div className="h-24 bg-slate-800 rounded-xl animate-pulse" />
+              <div className="h-24 bg-slate-800 rounded-xl animate-pulse" />
+            </div>
+            <div className="h-96 bg-slate-800 rounded-xl animate-pulse" />
+          </div>
         </div>
       </div>
     )

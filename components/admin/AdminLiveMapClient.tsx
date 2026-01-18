@@ -72,12 +72,14 @@ const DriverMarker = ({
   isSelected,
   onSelect,
   isDisconnected = false,
+  isStale = false,
   google
 }: { 
   driver: Profile
   isSelected: boolean
   onSelect: () => void
   isDisconnected?: boolean
+  isStale?: boolean
   google: typeof window.google
 }) => {
   const [position, setPosition] = useState({ lat: driver.latitude || 0, lng: driver.longitude || 0 })
@@ -163,8 +165,8 @@ const DriverMarker = ({
           onSelect()
         }}
         animation={isSelected ? google.maps.Animation.BOUNCE : undefined}
-        zIndex={isSelected ? 1000 : (isDisconnected ? 0 : 500)}
-        opacity={isDisconnected ? 0.5 : 1.0}
+        zIndex={isSelected ? 1000 : (isDisconnected || isStale ? 0 : 500)}
+        opacity={isDisconnected || isStale ? 0.5 : 1.0}
       />
       {showInfoWindow && (
         <InfoWindow
@@ -705,6 +707,15 @@ export function AdminLiveMapClient({
             return null
           }
           
+          // Calculate if driver location is stale (no update in 2+ minutes)
+          const isStale = (() => {
+            if (!driver.updated_at) return true
+            const lastUpdate = new Date(driver.updated_at).getTime()
+            const now = Date.now()
+            const minutesSinceUpdate = (now - lastUpdate) / (1000 * 60)
+            return minutesSinceUpdate > 2 // Stale if > 2 minutes
+          })()
+          
           // CRITICAL: AdvancedMarkerElement requires a Map ID to work
           // Check if map has mapId before using Advanced Markers
           // If no mapId, fall back to classic Marker to avoid console errors
@@ -735,6 +746,7 @@ export function AdminLiveMapClient({
                 isSelected={selectedDriver?.id === driver.id}
                 onSelect={() => handleDriverSelect(driver)}
                 isDisconnected={driver.is_online && !presenceMap[driver.id]}
+                isStale={isStale}
                 google={window.google}
                 map={currentMap}
               />
@@ -750,6 +762,7 @@ export function AdminLiveMapClient({
               isSelected={selectedDriver?.id === driver.id}
               onSelect={() => handleDriverSelect(driver)}
               isDisconnected={driver.is_online && !presenceMap[driver.id]}
+              isStale={isStale}
               google={window.google}
             />
           )

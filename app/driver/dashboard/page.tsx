@@ -10,6 +10,7 @@ import { useGeolocation } from '@/lib/hooks/useGeolocation'
 import { useRealtimeQueue } from '@/lib/hooks/useRealtimeQueue'
 import { useRealtimeTrips } from '@/lib/hooks/useRealtimeTrips'
 import { usePushNotifications } from '@/lib/hooks/usePushNotifications'
+import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus'
 import { SwipeToGoOnline } from '@/components/driver/SwipeToGoOnline'
 import { QueueCard } from '@/components/driver/QueueCard'
 import { TripOverlay } from '@/components/driver/TripOverlay'
@@ -21,6 +22,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { MapPin, Navigation, ChevronDown } from 'lucide-react'
 import type { Profile, Trip } from '@/lib/supabase'
 import { motion } from 'framer-motion'
+import { toast } from 'sonner'
 
 export default function DriverDashboard() {
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -52,6 +54,9 @@ export default function DriverDashboard() {
     driverId: profile?.id || null,
     autoRegister: false, // Manual registration when going online
   })
+
+  // Network status monitoring
+  const { isOnline: networkOnline, wasOffline } = useNetworkStatus()
 
   // Track user position for map
   useEffect(() => {
@@ -316,10 +321,41 @@ export default function DriverDashboard() {
           }
         }
       )
-      .subscribe()
+      .subscribe((status) => {
+        console.log('[Driver Dashboard] Profile subscription status:', status)
+        if (status === 'SUBSCRIBED') {
+          console.log('✅ Successfully subscribed to profile updates')
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error('❌ Error subscribing to profile updates')
+        } else if (status === 'TIMED_OUT') {
+          console.warn('⚠️ Profile subscription timed out')
+        }
+      })
+
+    // CRITICAL: Handle background tab recovery - resubscribe when tab regains focus
+    const handleVisibilityChange = () => {
+      if (!document.hidden && isMountedRef.current && profile?.id) {
+        console.log('[Driver Dashboard] Tab regained focus - refreshing subscription')
+        // Refetch profile to ensure freshness
+        supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', profile.id)
+          .single()
+          .then(({ data }) => {
+            if (data && isMountedRef.current) {
+              setProfile(data as Profile)
+              setIsOnline(!!data.is_online)
+            }
+          })
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
 
     return () => {
       isMountedRef.current = false
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
       supabase.removeChannel(channel)
     }
   }, [supabase, profile?.id]) // Remove isTogglingRef from deps - it's a ref, not state (prevents unnecessary re-subscriptions)
@@ -485,6 +521,14 @@ export default function DriverDashboard() {
         
         // Log status change for debugging
         console.log(checked ? '✅ Driver went online - location updates started' : '⏸️ Driver went offline - location updates stopped')
+        
+        // Premium toast confirmation for status change
+        toast.success(checked ? 'מחובר' : 'מנותק', {
+          description: checked 
+            ? 'אתה עכשיו פעיל ומקבל נסיעות' 
+            : 'אתה עכשיו לא פעיל'
+        })
+        
         // NO router.refresh() - optimistic UI already updated, no page reload needed
       }
     } catch (err: any) {
@@ -538,7 +582,9 @@ export default function DriverDashboard() {
 
       if (!response.ok) {
         console.error('[Driver Dashboard] Failed to accept trip:', result.error)
-        alert(result.error || 'שגיאה באישור הנסיעה. נסה שוב.')
+        toast.error('שגיאה', {
+          description: result.error || 'שגיאה באישור הנסיעה. נסה שוב.'
+        })
         return
       }
 
@@ -546,6 +592,9 @@ export default function DriverDashboard() {
       if (result.trip) {
         setActiveTrip(result.trip)
         clearPendingTrip()
+        toast.success('נסיעה אושרה', {
+          description: 'הנסיעה הוקצתה אליך בהצלחה'
+        })
       }
     } catch (error: any) {
       console.error('[Driver Dashboard] Error accepting trip:', error)
@@ -591,18 +640,33 @@ export default function DriverDashboard() {
     if (!error) {
       if (status === 'completed') {
         setActiveTrip(null)
+        toast.success('נסיעה הושלמה', {
+          description: 'הנסיעה הושלמה בהצלחה'
+        })
       } else {
         setActiveTrip({ ...activeTrip, status })
+        toast.success('סטטוס עודכן', {
+          description: 'סטטוס הנסיעה עודכן'
+        })
       }
+    } else {
+      toast.error('שגיאה', {
+        description: 'לא ניתן לעדכן את סטטוס הנסיעה'
+      })
     }
   }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-900">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-taxi-yellow mx-auto mb-4"></div>
-          <p className="text-white">טוען...</p>
+      <div className="flex items-center justify-center min-h-screen bg-gray-900 p-4">
+        <div className="w-full max-w-md space-y-4">
+          {/* Skeleton Loader - Premium feel */}
+          <div className="space-y-3">
+            <div className="h-8 bg-gray-800 rounded-lg animate-pulse" />
+            <div className="h-24 bg-gray-800 rounded-xl animate-pulse" />
+            <div className="h-16 bg-gray-800 rounded-xl animate-pulse" />
+            <div className="h-16 bg-gray-800 rounded-xl animate-pulse" />
+          </div>
         </div>
       </div>
     )

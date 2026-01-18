@@ -9,6 +9,7 @@ interface AdvancedDriverMarkerProps {
   isSelected: boolean
   onSelect: () => void
   isDisconnected?: boolean
+  isStale?: boolean // True if driver hasn't updated location in 2+ minutes
   google: typeof window.google
   map: google.maps.Map
 }
@@ -22,6 +23,7 @@ export const AdvancedDriverMarker = React.memo(({
   isSelected,
   onSelect,
   isDisconnected = false,
+  isStale = false,
   google,
   map
 }: AdvancedDriverMarkerProps) => {
@@ -95,8 +97,9 @@ export const AdvancedDriverMarker = React.memo(({
       offline: '#6B7280'      // Gray
     }
     
-    const color = colors[status]
-    const opacity = isDisconnected ? 0.5 : 1.0
+    // Gray out if stale (no update in 2+ minutes)
+    const color = isStale ? '#9CA3AF' : colors[status]
+    const opacity = isDisconnected || isStale ? 0.5 : 1.0
 
     // Create PinElement with custom content
     const pin = new google.maps.marker.PinElement({
@@ -114,7 +117,7 @@ export const AdvancedDriverMarker = React.memo(({
     container.appendChild(pin.element)
 
     return container
-  }, [google, driver.is_online, isSelected, heading, isDisconnected])
+  }, [google, driver.is_online, isSelected, heading, isDisconnected, isStale])
 
   // Create and update AdvancedMarkerElement
   useEffect(() => {
@@ -154,14 +157,16 @@ export const AdvancedDriverMarker = React.memo(({
 
   // Don't render anything - AdvancedMarkerElement is managed via Google Maps API
   return null
-}, (prevProps, nextProps) => {
+  }, (prevProps, nextProps) => {
   return (
     prevProps.driver.id === nextProps.driver.id &&
     prevProps.driver.latitude === nextProps.driver.latitude &&
     prevProps.driver.longitude === nextProps.driver.longitude &&
     prevProps.driver.heading === nextProps.driver.heading &&
+    prevProps.driver.updated_at === nextProps.driver.updated_at &&
     prevProps.isSelected === nextProps.isSelected &&
-    prevProps.isDisconnected === nextProps.isDisconnected
+    prevProps.isDisconnected === nextProps.isDisconnected &&
+    prevProps.isStale === nextProps.isStale
   )
 })
 
