@@ -209,24 +209,21 @@ export function AdminLiveMapClient({
   const [drivers, setDrivers] = useState<Profile[]>(initialDrivers || [])
   
   // Update drivers state when prop changes (from parent Realtime subscription)
-  // FIX: Use deep comparison to ensure all updates are caught
+  // CRITICAL: Use ref to track previous value to avoid dependency loop
+  const prevDriversPropRef = useRef<string>('')
+  
   useEffect(() => {
-    if (!initialDrivers) return
+    if (!initialDrivers || initialDrivers.length === 0) return
     
-    // Create a key from all driver IDs and their location to detect any change
-    const currentKey = drivers.map(d => `${d.id}:${d.latitude}:${d.longitude}:${d.updated_at}`).join('|')
-    const newKey = initialDrivers.map(d => `${d.id}:${d.latitude}:${d.longitude}:${d.updated_at}`).join('|')
+    // Create a stable key from driver data to detect changes
+    const newKey = initialDrivers.map(d => `${d.id}:${d.latitude}:${d.longitude}:${d.updated_at}:${d.is_online}`).join('|')
     
     // Only update if there's an actual change to prevent unnecessary re-renders
-    if (currentKey !== newKey) {
-      console.log('[AdminMap] Drivers prop changed, updating state:', {
-        oldCount: drivers.length,
-        newCount: initialDrivers.length,
-        changed: currentKey !== newKey
-      })
+    if (prevDriversPropRef.current !== newKey) {
+      prevDriversPropRef.current = newKey
       setDrivers(initialDrivers)
     }
-  }, [initialDrivers, drivers])
+  }, [initialDrivers]) // Remove 'drivers' from deps to prevent loop
   
   // Sync with external selectedDriverId prop (after drivers state is initialized)
   useEffect(() => {
@@ -247,20 +244,26 @@ export function AdminLiveMapClient({
     onDriverSelect?.(driver)
   }, [onDriverSelect])
 
-  // Debug: Log initial props and driver location data
+  // Track if component has mounted to prevent duplicate mount logs
+  const hasMountedRef = useRef(false)
+  
+  // Debug: Log initial props and driver location data (only once on mount)
   useEffect(() => {
+    if (hasMountedRef.current) return // Only log once
+    hasMountedRef.current = true
+    
     console.log('[AdminMap] Component mounted with:', {
-      driversCount: drivers.length,
-      zonesCount: zones.length,
+      driversCount: initialDrivers?.length || 0,
+      zonesCount: initialZones?.length || 0,
       isLoaded,
       loadError: loadError?.message,
-      onlineDrivers: drivers.filter(d => d.is_online).length,
-      driversWithLocation: drivers.filter(d => d.latitude && d.longitude).length
+      onlineDrivers: initialDrivers?.filter(d => d.is_online).length || 0,
+      driversWithLocation: initialDrivers?.filter(d => d.latitude && d.longitude).length || 0
     })
     
     // Log sample driver data for debugging
-    if (drivers.length > 0) {
-      const sampleDriver = drivers.find(d => d.is_online && d.latitude && d.longitude)
+    if (initialDrivers && initialDrivers.length > 0) {
+      const sampleDriver = initialDrivers.find(d => d.is_online && d.latitude && d.longitude)
       if (sampleDriver) {
         console.log('[AdminMap] Sample driver location:', {
           id: sampleDriver.id,
@@ -272,34 +275,40 @@ export function AdminLiveMapClient({
         })
       }
     }
-  }, [])
+  }, []) // Empty deps - only run once on mount
   
-  // Debug: Log when drivers state changes (from parent subscription)
+  // Debug: Log when drivers state changes (throttled to prevent spam)
+  // Only log structural changes (add/remove drivers), not location updates
+  const prevDriversLogKeyRef = useRef<string>('')
+  
   useEffect(() => {
-    if (drivers.length > 0) {
-      const onlineWithLocation = drivers.filter(d => 
-        d.is_online && 
-        d.latitude && 
-        d.longitude &&
-        typeof d.latitude === 'number' &&
-        typeof d.longitude === 'number'
-      )
-      console.log('[AdminMap] 🔄 Drivers state updated:', {
-        total: drivers.length,
-        online: drivers.filter(d => d.is_online).length,
-        onlineWithLocation: onlineWithLocation.length,
-        sampleLocations: onlineWithLocation.slice(0, 3).map(d => ({
-          id: d.id,
-          name: d.full_name,
-          lat: d.latitude,
-          lng: d.longitude,
-          updated_at: d.updated_at
-        }))
-      })
-    } else {
-      console.log('[AdminMap] Drivers state is empty')
-    }
-  }, [drivers])
+    if (drivers.length === 0) return
+    
+    // Create a key from driver IDs and online status - only log if structural change
+    const logKey = drivers.map(d => `${d.id}:${d.is_online}`).sort().join('|')
+    if (prevDriversLogKeyRef.current === logKey) return // Skip if no structural change
+    prevDriversLogKeyRef.current = logKey
+    
+    const onlineWithLocation = drivers.filter(d => 
+      d.is_online && 
+      d.latitude && 
+      d.longitude &&
+      typeof d.latitude === 'number' &&
+      typeof d.longitude === 'number'
+    )
+    console.log('[AdminMap] 🔄 Drivers state updated:', {
+      total: drivers.length,
+      online: drivers.filter(d => d.is_online).length,
+      onlineWithLocation: onlineWithLocation.length,
+      sampleLocations: onlineWithLocation.slice(0, 3).map(d => ({
+        id: d.id,
+        name: d.full_name,
+        lat: d.latitude,
+        lng: d.longitude,
+        updated_at: d.updated_at
+      }))
+    })
+  }, [drivers]) // Use drivers array, but check key internally to avoid spam
 
   // Track which drivers have active trips
   const driverIds = useMemo(() => drivers.map(d => d.id), [drivers])
@@ -443,7 +452,8 @@ export function AdminLiveMapClient({
       return isValid
     })
     
-    console.log('[AdminMap] Valid online drivers:', valid.length, 'out of', drivers.length, 'total')
+    // Removed log from useMemo - it runs on every render when drivers changes
+    // Logging is handled in useEffect hooks that throttle updates
     return valid
   }, [drivers])
 
@@ -452,11 +462,31 @@ export function AdminLiveMapClient({
     return onlineDrivers.map(d => `${d.id}:${d.latitude}:${d.longitude}`).join(',')
   }, [onlineDrivers])
 
-  // Memoize map options (only when Google Maps is loaded)
+  // Track if we've logged the fallback warning (only log once)
+  const hasLoggedFallbackWarningRef = useRef(false)
+  const hasLoggedAdvancedMarkerInfoRef = useRef(false)
+  
+  // Memoize map options - only recalculate when isLoaded becomes true
+  // Remove warning from useMemo to prevent repeated logs during renders
   const mapOptions = useMemo<google.maps.MapOptions>(() => {
-    // Check if google is available
+    // Only create options when isLoaded is true - otherwise return stable default
+    if (!isLoaded) {
+      return {
+        disableDefaultUI: false,
+        styles: silverMapStyle,
+        center: ACRE_CENTER,
+        zoom: 13,
+        gestureHandling: 'greedy',
+      }
+    }
+
+    // Check if google is available (should be true if isLoaded is true)
     if (typeof window === 'undefined' || !window.google?.maps) {
-      console.warn('[AdminMap] Google Maps API not available, using fallback options')
+      // Only log warning once
+      if (!hasLoggedFallbackWarningRef.current) {
+        console.warn('[AdminMap] Google Maps API not available, using fallback options')
+        hasLoggedFallbackWarningRef.current = true
+      }
       return {
         disableDefaultUI: false,
         styles: silverMapStyle,
@@ -507,23 +537,22 @@ export function AdminLiveMapClient({
         gestureHandling: 'greedy',
       }
     }
-  }, [isLoaded])
+  }, [isLoaded]) // Only recalculate when isLoaded changes
 
-  // Debug: Log Google Maps loading status
+  // Debug: Log Google Maps loading status (only when isLoaded changes, not on every driver update)
+  const prevIsLoadedRef = useRef<boolean | null>(null)
+  
   useEffect(() => {
-    console.log('[AdminMap] Google Maps loaded:', isLoaded)
-    console.log('[AdminMap] window.google available:', typeof window !== 'undefined' && !!window.google)
-    console.log('[AdminMap] Drivers count:', drivers.length)
-    console.log('[AdminMap] Online drivers:', onlineDrivers.length)
-    if (onlineDrivers.length > 0) {
-      console.log('[AdminMap] Sample driver data:', {
-        id: onlineDrivers[0].id,
-        lat: onlineDrivers[0].latitude,
-        lng: onlineDrivers[0].longitude,
-        is_online: onlineDrivers[0].is_online
-      })
+    // Only log when isLoaded actually changes
+    if (prevIsLoadedRef.current === isLoaded) return
+    prevIsLoadedRef.current = isLoaded
+    
+    // Only log when isLoaded becomes true (map is ready)
+    if (isLoaded) {
+      console.log('[AdminMap] ✅ Google Maps loaded and ready')
+      console.log('[AdminMap] window.google available:', typeof window !== 'undefined' && !!window.google)
     }
-  }, [isLoaded, drivers.length, onlineDrivers.length])
+  }, [isLoaded]) // Only depend on isLoaded, not drivers.length or onlineDrivers.length
 
   // Center map on selected driver
   useEffect(() => {
@@ -728,9 +757,10 @@ export function AdminLiveMapClient({
             window.google.maps.marker.AdvancedMarkerElement && 
             hasMapId
           
-          // Log if Advanced Markers are disabled (only once per mount)
-          if (!hasMapId && window.google.maps.marker?.AdvancedMarkerElement && isInitialMountRef.current) {
-            console.info('[AdminMap] ℹ️ Using classic Markers (Advanced Markers require Map ID). To enable Advanced Markers, set NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID in .env.local')
+          // Log if Advanced Markers are disabled (only once using ref)
+          if (!hasMapId && window.google.maps.marker?.AdvancedMarkerElement && !hasLoggedAdvancedMarkerInfoRef.current) {
+            hasLoggedAdvancedMarkerInfoRef.current = true
+            console.info('[AdminMap] ℹ️ Using classic Markers (Advanced Markers require Map ID). To enable Advanced Markers, set NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID in .env.local and Vercel environment variables.')
           }
           
           // Use AdvancedMarkerElement only if Map ID is available
