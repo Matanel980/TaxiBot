@@ -327,6 +327,14 @@ export default function DriverDashboard() {
   const handleToggleOnline = async (checked: boolean) => {
     if (!profile) return
     
+    // CRITICAL: Prevent going offline if driver has an active trip
+    if (!checked && activeTrip && activeTrip.status === 'active') {
+      console.warn('[Driver Toggle] Cannot go offline while active trip is in progress')
+      // Show user-friendly message
+      alert('לא ניתן להתנתק בעת נסיעה פעילה. אנא השלם את הנסיעה תחילה.')
+      return
+    }
+    
     // PREVENT RAPID TOGGLES: If already toggling, ignore new toggle attempts
     if (isTogglingRef.current || toggling) {
       console.log('[Driver Toggle] Toggle already in progress, ignoring duplicate request')
