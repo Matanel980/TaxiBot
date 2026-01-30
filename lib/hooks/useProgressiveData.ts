@@ -108,10 +108,15 @@ export function useProgressiveData({
       if (!isMountedRef.current) return
 
       if (profileError) {
-        if (profileError.code === 'PGRST116' || profileError.message?.includes('406')) {
+        // CRITICAL FIX: Provide more specific error messages
+        if (profileError.code === 'PGRST116' || profileError.message?.includes('406') || profileError.message?.includes('No rows')) {
           throw new Error('Profile not found or RLS policy issue')
         }
-        throw new Error(`Profile fetch error: ${profileError.message}`)
+        // Check for RLS recursion error
+        if (profileError.code === '42P17' || profileError.message?.includes('infinite recursion')) {
+          throw new Error('RLS policy recursion error - contact admin')
+        }
+        throw new Error(`Profile fetch error: ${profileError.message || profileError.code || 'Unknown error'}`)
       }
 
       if (data) {

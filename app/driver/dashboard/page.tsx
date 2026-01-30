@@ -93,6 +93,30 @@ export default function DriverDashboard() {
   // Determine loading state: show loading only if critical data hasn't loaded yet
   const loading = criticalLoading
 
+  // CRITICAL FIX: Handle errors gracefully - show error state instead of blank screen
+  useEffect(() => {
+    if (progressiveError) {
+      console.error('[Driver Dashboard] Progressive data error:', progressiveError)
+      
+      // If error is "Profile not found", redirect to onboarding
+      if (progressiveError.message?.includes('Profile not found') || progressiveError.message?.includes('RLS policy issue')) {
+        console.warn('[Driver Dashboard] Profile not found - redirecting to onboarding')
+        router.push('/onboarding')
+        return
+      }
+      
+      // If error is authentication-related, redirect to login
+      if (progressiveError.message?.includes('Authentication error') || progressiveError.message?.includes('No authenticated user')) {
+        console.warn('[Driver Dashboard] Authentication error - redirecting to login')
+        router.push('/login')
+        return
+      }
+      
+      // For other errors, show error toast but don't redirect
+      toast.error('שגיאה בטעינת הנתונים. אנא רענן את הדף.')
+    }
+  }, [progressiveError, router])
+
   const { queuePosition, totalInQueue } = useRealtimeQueue({
     zoneId: profile?.current_zone || null,
     driverId: profile?.id || ''
@@ -577,13 +601,59 @@ export default function DriverDashboard() {
     )
   }
 
-  // Show error state if critical data failed to load
+  // CRITICAL FIX: Show error state if critical data failed to load
+  // Handle different error types appropriately
   if (progressiveError && !criticalData) {
+    // If profile not found, redirect to onboarding
+    if (progressiveError.message?.includes('Profile not found') || progressiveError.message?.includes('RLS policy issue')) {
+      // Use useEffect for redirect (can't use hooks in render)
+      const RedirectToOnboarding = () => {
+        useEffect(() => {
+          router.push('/onboarding')
+        }, [router])
+        return (
+          <div className="flex items-center justify-center min-h-screen bg-gray-900 p-4">
+            <div className="text-center">
+              <div className="text-5xl mb-4">📝</div>
+              <p className="text-gray-300">מעבר לטופס הרשמה...</p>
+            </div>
+          </div>
+        )
+      }
+      return <RedirectToOnboarding />
+    }
+    
+    // If authentication error, redirect to login
+    if (progressiveError.message?.includes('Authentication error') || progressiveError.message?.includes('No authenticated user')) {
+      const RedirectToLogin = () => {
+        useEffect(() => {
+          router.push('/login')
+        }, [router])
+        return (
+          <div className="flex items-center justify-center min-h-screen bg-gray-900 p-4">
+            <div className="text-center">
+              <div className="text-5xl mb-4">🔒</div>
+              <p className="text-gray-300">מעבר לעמוד התחברות...</p>
+            </div>
+          </div>
+        )
+      }
+      return <RedirectToLogin />
+    }
+    
+    // For other errors, show error state with reload option
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-900 p-4">
-        <div className="text-center">
-          <p className="text-red-400 mb-4">שגיאה בטעינת הנתונים</p>
-          <p className="text-gray-400 text-sm">{progressiveError.message}</p>
+        <div className="text-center max-w-md">
+          <div className="text-5xl mb-4">⚠️</div>
+          <h2 className="text-xl font-bold text-white mb-2">שגיאה בטעינת הנתונים</h2>
+          <p className="text-gray-300 mb-4 text-sm">{progressiveError.message || 'אירעה שגיאה לא צפויה'}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-taxi-yellow text-gray-900 rounded-lg font-semibold hover:bg-yellow-400 transition-colors"
+          >
+            רענן דף
+          </button>
         </div>
       </div>
     )
@@ -730,17 +800,17 @@ export default function DriverDashboard() {
         {/* PROGRESSIVE RENDERING: Only shows when secondary data (current_zone) is loaded */}
         {profile?.current_zone && (
           <motion.div layout>
-            <Card className="glass-card-dark rounded-xl sm:rounded-2xl">
-              <CardContent className="p-3 sm:p-4">
-                <div className="flex items-center gap-2">
-                  <MapPin className="text-taxi-yellow flex-shrink-0" size={18} />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs sm:text-sm text-gray-400">אזור נוכחי</p>
-                    <p className="font-semibold text-white text-sm sm:text-base truncate">מרכז העיר</p>
-                  </div>
+          <Card className="glass-card-dark rounded-xl sm:rounded-2xl">
+            <CardContent className="p-3 sm:p-4">
+              <div className="flex items-center gap-2">
+                <MapPin className="text-taxi-yellow flex-shrink-0" size={18} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs sm:text-sm text-gray-400">אזור נוכחי</p>
+                  <p className="font-semibold text-white text-sm sm:text-base truncate">מרכז העיר</p>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </CardContent>
+          </Card>
           </motion.div>
         )}
 

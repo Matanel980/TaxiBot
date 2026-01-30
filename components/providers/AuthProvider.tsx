@@ -27,20 +27,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const initialize = async () => {
       try {
-        const { data: { session: initialSession } } = await supabase.auth.getSession()
-        setSession(initialSession)
-        setUser(initialSession?.user ?? null)
+        // CRITICAL FIX: Use getUser() instead of getSession() for consistency with middleware
+        // getUser() is more secure and forces refresh if session is stale
+        const { data: { user: initialUser }, error: userError } = await supabase.auth.getUser()
         
-        if (initialSession?.user) {
-          const { data: prof } = await supabase
+        if (userError) {
+          console.error('[Auth] Error getting user:', userError)
+          setUser(null)
+          setSession(null)
+          setProfile(null)
+          setLoading(false)
+          return
+        }
+        
+        if (initialUser) {
+          // Get session for compatibility
+          const { data: { session: initialSession } } = await supabase.auth.getSession()
+          setSession(initialSession)
+          setUser(initialUser)
+          
+          // Fetch profile with error handling
+          const { data: prof, error: profileError } = await supabase
             .from('profiles')
             .select('*')
-            .eq('id', initialSession.user.id)
+            .eq('id', initialUser.id)
             .single()
-          setProfile(prof)
+          
+          if (profileError) {
+            console.error('[Auth] Profile fetch error:', profileError)
+            // CRITICAL FIX: Don't redirect on profile error - let client handle it
+            // Profile might not exist yet (onboarding scenario)
+            setProfile(null)
+          } else {
+            setProfile(prof)
+          }
+        } else {
+          setUser(null)
+          setSession(null)
+          setProfile(null)
         }
       } catch (error) {
         console.error('[Auth] Initialization error:', error)
+        setUser(null)
+        setSession(null)
+        setProfile(null)
       } finally {
         setLoading(false)
       }
@@ -50,12 +80,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(newSession)
       setUser(newSession?.user ?? null)
       if (newSession?.user) {
-        const { data: prof } = await supabase
+        // CRITICAL FIX: Handle profile fetch errors gracefully
+        const { data: prof, error: profileError } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', newSession.user.id)
           .single()
-        setProfile(prof)
+        
+        if (profileError) {
+          console.error('[Auth] Profile fetch error on auth change:', profileError)
+          // Don't redirect - let client handle missing profile
+          setProfile(null)
+        } else {
+          setProfile(prof)
+        }
       } else {
         setProfile(null)
       }

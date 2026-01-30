@@ -262,8 +262,14 @@ export async function middleware(request: NextRequest) {
     return redirectResponse
   }
 
-  // CRITICAL FIX: Early return for /login and /auth paths to prevent infinite redirect loops
+  // CRITICAL FIX: Early return for /login, /auth, and API routes to prevent infinite redirect loops
   // If user is already on /login or /auth, return immediately without any redirect logic
+  // Also exclude API routes from middleware processing
+  if (pathname.startsWith('/api/')) {
+    // API routes should not be processed by middleware (they handle their own auth)
+    return response
+  }
+  
   if (pathname === '/login' || pathname.startsWith('/auth/')) {
     // Only redirect away from /login if user is authenticated (handled later)
     // Otherwise, allow access to /login without redirecting
@@ -310,7 +316,9 @@ export async function middleware(request: NextRequest) {
     // Fetch profile with station isolation support
     const { profile, error } = await fetchUserProfile(user.id)
 
-    // Handle 42P17 (infinite recursion) error specifically
+    // CRITICAL FIX: Handle profile fetch errors gracefully without redirect loops
+    // If profile is missing, allow access but let client-side handle the error
+    // This prevents infinite redirect loops when user exists but profile is missing
     if (error) {
       if (error.code === '42P17' || error.message?.includes('infinite recursion')) {
         console.error(`[Middleware] ⚠️ RLS Recursion Error (42P17) for user ${user.id}. Profile exists but RLS policy is broken.`)
@@ -327,20 +335,51 @@ export async function middleware(request: NextRequest) {
           // Continue with email-based role
         } else {
           console.error('[Middleware] ❌ Cannot proceed: RLS recursion error and no email fallback')
-          return redirect('/login', 'RLS policy error - contact admin')
+          // CRITICAL FIX: Don't redirect if already on /login - this causes infinite loop
+          if (!isLoginPath) {
+            return redirect('/login', 'RLS policy error - contact admin')
+          }
+          // If already on /login, allow access and let client handle error
+          return response
         }
       } else {
         // Other errors (profile not found, etc.)
-        console.error(`[Middleware] Profile not found for user ${user.id}:`, error)
+        console.error(`[Middleware] Profile fetch error for user ${user.id}:`, {
+          code: error.code,
+          message: error.message,
+          hint: 'Profile may not exist yet. Allowing access to let client-side handle.'
+        })
+        
+        // CRITICAL FIX: If profile is missing, allow access to let client-side handle
+        // Redirecting causes infinite loop if user is authenticated but profile is missing
         if (isAdminEmail) {
+          // Admin email fallback - allow access
         } else {
-          return redirect('/login', 'Profile not found - contact admin')
+          // For non-admin users with missing profile, allow access but log warning
+          // Client-side code should handle missing profile (show onboarding, etc.)
+          console.warn(`[Middleware] ⚠️ Profile not found for user ${user.id} - allowing access to let client handle`)
+          // Don't redirect - let the page render and show appropriate error/onboarding
         }
       }
     }
 
+    // CRITICAL FIX: Only redirect if profile is missing AND not already on /login
+    // If profile is missing but user is authenticated, allow access to let client handle
     if (!profile && !isAdminEmail) {
-      return redirect('/login', 'Profile not found - contact admin')
+      // Check if this is a profile-not-found scenario (user exists but no profile)
+      // In this case, allow access to let client-side handle (show onboarding, etc.)
+      if (error && (error.code === 'PGRST116' || error.message?.includes('No rows'))) {
+        console.warn(`[Middleware] ⚠️ Profile not found for authenticated user ${user.id} - allowing access for onboarding`)
+        // Don't redirect - let the page render and show onboarding
+        return response
+      }
+      
+      // Only redirect if not already on /login
+      if (!isLoginPath) {
+        return redirect('/login', 'Profile not found - contact admin')
+      }
+      // If already on /login, allow access
+      return response
     }
 
     const userRole = profile?.role || (isAdminEmail ? 'admin' : '')
@@ -482,11 +521,12 @@ export const config = {
   matcher: [
     /*
      * Match all request paths except for the ones starting with:
+     * - api/ (API routes - handle their own auth)
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico (favicon file)
      * - public folder files (images, etc.)
      */
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|woff|woff2|ttf|eot)$).*)',
+    '/((?!api/|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|woff|woff2|ttf|eot)$).*)',
   ],
 }
