@@ -39,6 +39,8 @@ export async function middleware(request: NextRequest) {
   
 
   // Initialize Supabase client with proper cookie handling
+  // CRITICAL: In Vercel production, we need to ensure cookies are properly set
+  // with correct domain, secure, and sameSite flags
   const supabase = createServerClient(
     supabaseUrl,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -64,8 +66,11 @@ export async function middleware(request: NextRequest) {
             request.cookies.set(name, value)
             
             // Step 2: Set on response with explicit path and secure options (for browser)
-            // ENTERPRISE-GRADE: Enhanced cookie security settings
+            // PRODUCTION FIX: Enhanced cookie settings for Vercel
             const isAuthCookie = name.includes('auth-token') || name.includes('auth-refresh')
+            
+            // CRITICAL: Detect if we're in production (Vercel sets VERCEL=1)
+            const isProduction = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production'
             
             const cookieOptions: {
               path: string
@@ -75,10 +80,11 @@ export async function middleware(request: NextRequest) {
               maxAge?: number
             } = {
               path: '/', // CRITICAL: Explicit path for cookie persistence
-              sameSite: 'lax', // Allow cookies in cross-site requests
-              // ENTERPRISE-GRADE: Auth cookies should be HttpOnly to prevent XSS
+              sameSite: 'lax', // Allow cookies in cross-site requests (required for Vercel)
+              // PRODUCTION FIX: Auth cookies should be HttpOnly to prevent XSS
               httpOnly: isAuthCookie ? true : ((cookie.options?.httpOnly) ?? false),
-              secure: process.env.NODE_ENV === 'production', // Secure in production (HTTPS only)
+              // PRODUCTION FIX: Always secure in production (Vercel uses HTTPS)
+              secure: isProduction,
             }
             
             // Preserve maxAge if set, otherwise set defaults for auth cookies
@@ -91,6 +97,11 @@ export async function middleware(request: NextRequest) {
               } else if (name.includes('auth-refresh')) {
                 cookieOptions.maxAge = 60 * 60 * 24 * 30 // 30 days for refresh token
               }
+            }
+            
+            // PRODUCTION FIX: Log cookie writes in production for debugging (only first few times)
+            if (isProduction && isAuthCookie && writtenCookies.size <= 2) {
+              console.error(`[Middleware Production] Setting auth cookie: ${name.substring(0, 30)}... | Secure: ${cookieOptions.secure} | HttpOnly: ${cookieOptions.httpOnly} | Path: ${cookieOptions.path}`)
             }
             
             // Write cookie to response
@@ -108,6 +119,15 @@ export async function middleware(request: NextRequest) {
   // We use getSession() which automatically refreshes expired tokens
   const { data: { session }, error: sessionError } = await supabase.auth.getSession()
   
+  // PRODUCTION DEBUG: Log session state in production
+  const isProduction = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production'
+  if (isProduction) {
+    const cookiesAfterGetSession = response.cookies.getAll()
+    const authCookiesAfterGetSession = cookiesAfterGetSession.filter(c => 
+      c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
+    )
+    console.error(`[Middleware Production] After getSession() - Has session: ${!!session}, Auth cookies in response: ${authCookiesAfterGetSession.length}`)
+  }
   
   if (sessionError) {
     console.error(`[Middleware] Error getting session:`, {
@@ -115,9 +135,18 @@ export async function middleware(request: NextRequest) {
       status: sessionError.status
     })
     
+    // PRODUCTION DEBUG: Log cookie state when session error occurs
+    if (isProduction) {
+      const allCookies = request.cookies.getAll()
+      const authCookies = allCookies.filter(c => 
+        c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
+      )
+      console.error(`[Middleware Production] Session error - Incoming auth cookies: ${authCookies.length}, Cookie names: ${authCookies.map(c => c.name.substring(0, 30)).join(', ')}`)
+    }
+    
     // GRACEFUL FAIL: If session refresh fails, clear cookies and redirect to login
     // This prevents hanging on blank screens
-    if (sessionError.status === 401 || sessionError.message?.includes('JWT')) {
+    if (sessionError.status === 401 || sessionError.message?.includes('JWT') || sessionError.message?.includes('session')) {
       console.warn(`[Middleware] ⚠️ Session invalid - clearing cookies and redirecting to login`)
       
       // Clear all auth cookies
@@ -142,14 +171,32 @@ export async function middleware(request: NextRequest) {
   
   const { pathname } = request.nextUrl
   
+  // PRODUCTION DEBUG: Log user state in production
+  if (isProduction) {
+    const cookiesAfterGetUser = response.cookies.getAll()
+    const authCookiesAfterGetUser = cookiesAfterGetUser.filter(c => 
+      c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
+    )
+    console.error(`[Middleware Production] After getUser() - Has user: ${!!user}, Auth cookies in response: ${authCookiesAfterGetUser.length}`)
+  }
+  
   if (userError) {
     console.error(`[Middleware] Error getting user:`, {
       message: userError.message,
       status: userError.status
     })
     
+    // PRODUCTION DEBUG: Log cookie state when user error occurs
+    if (isProduction) {
+      const allCookies = request.cookies.getAll()
+      const authCookies = allCookies.filter(c => 
+        c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
+      )
+      console.error(`[Middleware Production] User error - Incoming auth cookies: ${authCookies.length}, Response auth cookies: ${response.cookies.getAll().filter(c => c.name.includes('auth')).length}`)
+    }
+    
     // GRACEFUL FAIL: If user fetch fails (invalid token, expired, etc.), clear and redirect
-    if (userError.status === 401 || userError.message?.includes('JWT') || userError.message?.includes('token')) {
+    if (userError.status === 401 || userError.message?.includes('JWT') || userError.message?.includes('token') || userError.message?.includes('session')) {
       console.warn(`[Middleware] ⚠️ User authentication failed - clearing cookies and redirecting to login`)
       
       // Clear all auth cookies
@@ -166,7 +213,7 @@ export async function middleware(request: NextRequest) {
       return clearResponse
     }
   }
-
+  
 
   // Helper for strict redirects with cookie propagation
   const redirect = (path: string, reason: string) => {

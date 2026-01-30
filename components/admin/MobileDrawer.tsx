@@ -17,17 +17,37 @@ export function MobileDrawer() {
       // CRITICAL: Set is_online to false before signing out (for admin, though less critical)
       const { data: { user } } = await supabase.auth.getUser()
       if (user) {
-        await supabase
-          .from('profiles')
-          .update({ 
-            is_online: false,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', user.id)
+        try {
+          await supabase
+            .from('profiles')
+            .update({ 
+              is_online: false,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', user.id)
+        } catch (updateError) {
+          // Continue with logout even if update fails
+          console.error('[Logout] Failed to update is_online:', updateError)
+        }
       }
       
-      // Clear Supabase session
+      // PRODUCTION FIX: Clear Supabase session and cookies
       await supabase.auth.signOut()
+      
+      // PRODUCTION FIX: Explicitly clear all Supabase cookies
+      if (typeof document !== 'undefined') {
+        // Clear all cookies that start with 'sb-'
+        document.cookie.split(';').forEach((cookie) => {
+          const eqPos = cookie.indexOf('=')
+          const name = eqPos > -1 ? cookie.substr(0, eqPos).trim() : cookie.trim()
+          if (name.startsWith('sb-')) {
+            // Clear cookie with all possible paths and domains
+            document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`
+            document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=${window.location.hostname}`
+            document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=.${window.location.hostname}`
+          }
+        })
+      }
       
       // Clear all localStorage
       if (typeof window !== 'undefined') {
@@ -35,12 +55,23 @@ export function MobileDrawer() {
         sessionStorage.clear()
       }
       
-      // Hard redirect to login (prevents back-button navigation)
-      window.location.replace('/login')
+      // PRODUCTION FIX: Hard redirect to login (prevents back-button navigation)
+      // Use replace to ensure no history entry
+      window.location.href = '/login'
     } catch (error) {
-      console.error('Logout error:', error)
-      // Force redirect even if signOut fails
-      window.location.replace('/login')
+      console.error('[Logout] Error during logout:', error)
+      // PRODUCTION FIX: Force redirect even if signOut fails
+      // Clear cookies manually and redirect
+      if (typeof document !== 'undefined') {
+        document.cookie.split(';').forEach((cookie) => {
+          const eqPos = cookie.indexOf('=')
+          const name = eqPos > -1 ? cookie.substr(0, eqPos).trim() : cookie.trim()
+          if (name.startsWith('sb-')) {
+            document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`
+          }
+        })
+      }
+      window.location.href = '/login'
     }
   }
 
