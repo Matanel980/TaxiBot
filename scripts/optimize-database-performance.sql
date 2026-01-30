@@ -5,19 +5,37 @@
 -- ============================================
 
 -- ============================================
--- 1. PostGIS Spatial Indexes (CRITICAL for Geo Queries)
+-- 0. Required Extensions
 -- ============================================
 
--- Ensure PostGIS extension is enabled
+-- Enable PostGIS extension for spatial queries
 CREATE EXTENSION IF NOT EXISTS postgis;
+
+-- Enable btree_gist extension for GIST indexes on UUID columns
+-- This is REQUIRED for composite GIST indexes that include UUID columns
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+-- ============================================
+-- 1. PostGIS Spatial Indexes (CRITICAL for Geo Queries)
+-- ============================================
 
 -- GIST index on zones_postgis geometry (already exists, but verify)
 CREATE INDEX IF NOT EXISTS zones_postgis_geometry_gist_idx 
 ON zones_postgis USING GIST (geometry);
 
 -- Composite index for station-aware zone queries
+-- Note: For composite GIST indexes with UUID, we use btree_gist extension
+-- This allows GIST indexing on both geometry (spatial) and UUID (btree_gist)
 CREATE INDEX IF NOT EXISTS zones_postgis_station_geometry_idx 
 ON zones_postgis USING GIST (geometry, station_id) 
+WHERE station_id IS NOT NULL;
+
+-- Alternative: Separate indexes for better query flexibility
+-- GIST index for geometry (spatial queries)
+-- BTREE index for station_id (equality/join queries)
+-- This approach is more flexible and doesn't require btree_gist for the UUID column
+CREATE INDEX IF NOT EXISTS zones_postgis_station_id_btree_idx 
+ON zones_postgis USING BTREE (station_id) 
 WHERE station_id IS NOT NULL;
 
 -- ============================================
@@ -90,7 +108,7 @@ BEGIN
     WHERE tablename = 'profiles' 
     AND indexname LIKE '%station_id%'
   ) THEN
-    CREATE INDEX profiles_station_id_idx ON profiles(station_id);
+    CREATE INDEX IF NOT EXISTS profiles_station_id_idx ON profiles(station_id);
   END IF;
 END $$;
 
@@ -102,7 +120,7 @@ BEGIN
     WHERE tablename = 'profiles' 
     AND indexname LIKE '%current_zone%'
   ) THEN
-    CREATE INDEX profiles_current_zone_idx ON profiles(current_zone);
+    CREATE INDEX IF NOT EXISTS profiles_current_zone_idx ON profiles(current_zone);
   END IF;
 END $$;
 
@@ -114,7 +132,7 @@ BEGIN
     WHERE tablename = 'trips' 
     AND indexname LIKE '%driver_id%'
   ) THEN
-    CREATE INDEX trips_driver_id_idx ON trips(driver_id);
+    CREATE INDEX IF NOT EXISTS trips_driver_id_idx ON trips(driver_id);
   END IF;
 END $$;
 
@@ -126,7 +144,7 @@ BEGIN
     WHERE tablename = 'trips' 
     AND indexname LIKE '%station_id%'
   ) THEN
-    CREATE INDEX trips_station_id_idx ON trips(station_id);
+    CREATE INDEX IF NOT EXISTS trips_station_id_idx ON trips(station_id);
   END IF;
 END $$;
 
