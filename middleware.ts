@@ -38,6 +38,46 @@ export async function middleware(request: NextRequest) {
   const writtenCookies = new Set<string>()
   
 
+  // CRITICAL: Detect if we're in production (Vercel sets VERCEL=1)
+  const isProduction = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production'
+  
+  // CRITICAL FIX: Explicit cookie options for Vercel production
+  // These options ensure cookies persist correctly in Vercel's edge network
+  const getCookieOptions = (cookieName: string, cookieValue: string) => {
+    const isAuthCookie = cookieName.includes('auth-token') || cookieName.includes('auth-refresh')
+    
+    // Explicit cookie options as requested
+    const cookieOptions: {
+      name: string
+      value: string
+      secure: boolean
+      sameSite: 'lax' | 'strict' | 'none'
+      path: string
+      domain?: string
+      httpOnly: boolean
+      maxAge?: number
+    } = {
+      name: cookieName,
+      value: cookieValue,
+      secure: true, // CRITICAL: Required for Vercel HTTPS
+      sameSite: 'lax',
+      path: '/',
+      domain: '', // CRITICAL: Leave empty to let Vercel handle it automatically
+      httpOnly: isAuthCookie, // Auth cookies should be HttpOnly
+    }
+    
+    // Set maxAge for auth cookies
+    if (isAuthCookie) {
+      if (cookieName.includes('auth-token')) {
+        cookieOptions.maxAge = 60 * 60 * 24 * 7 // 7 days
+      } else if (cookieName.includes('auth-refresh')) {
+        cookieOptions.maxAge = 60 * 60 * 24 * 30 // 30 days
+      }
+    }
+    
+    return cookieOptions
+  }
+
   // Initialize Supabase client with proper cookie handling
   // CRITICAL: In Vercel production, we need to ensure cookies are properly set
   // with correct domain, secure, and sameSite flags
@@ -54,7 +94,7 @@ export async function middleware(request: NextRequest) {
         setAll(cookiesToSet) {
           // CRITICAL: Double Sync Pattern for Next.js Middleware
           // 1. Update request.cookies (so current process sees the session)
-          // 2. Update response.cookies (so browser receives the session update)
+          // 2. Update response.cookies AND response.headers (so browser receives the session update)
           
           cookiesToSet.forEach((cookie) => {
             const { name, value } = cookie
@@ -65,49 +105,45 @@ export async function middleware(request: NextRequest) {
             // Step 1: Set on request cookies (for current request processing)
             request.cookies.set(name, value)
             
-            // Step 2: Set on response with explicit path and secure options (for browser)
-            // PRODUCTION FIX: Enhanced cookie settings for Vercel
-            const isAuthCookie = name.includes('auth-token') || name.includes('auth-refresh')
+            // Step 2: Get explicit cookie options
+            const cookieOptions = getCookieOptions(name, value)
             
-            // CRITICAL: Detect if we're in production (Vercel sets VERCEL=1)
-            const isProduction = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production'
+            // Step 3: Set on response.cookies (standard Next.js way)
+            response.cookies.set(name, value, {
+              path: cookieOptions.path,
+              sameSite: cookieOptions.sameSite,
+              httpOnly: cookieOptions.httpOnly,
+              secure: cookieOptions.secure,
+              maxAge: cookieOptions.maxAge,
+            })
             
-            const cookieOptions: {
-              path: string
-              sameSite: 'lax' | 'strict' | 'none'
-              httpOnly: boolean
-              secure: boolean
-              maxAge?: number
-            } = {
-              path: '/', // CRITICAL: Explicit path for cookie persistence
-              sameSite: 'lax', // Allow cookies in cross-site requests (required for Vercel)
-              // PRODUCTION FIX: Auth cookies should be HttpOnly to prevent XSS
-              httpOnly: isAuthCookie ? true : ((cookie.options?.httpOnly) ?? false),
-              // PRODUCTION FIX: Always secure in production (Vercel uses HTTPS)
-              secure: isProduction,
+            // CRITICAL FIX: Also set via response.headers.set('set-cookie', ...) for Vercel
+            // This ensures cookies are properly synced in Vercel's edge network
+            const setCookieValue = [
+              `${name}=${value}`,
+              `Path=${cookieOptions.path}`,
+              `SameSite=${cookieOptions.sameSite}`,
+              cookieOptions.secure ? 'Secure' : '',
+              cookieOptions.httpOnly ? 'HttpOnly' : '',
+              cookieOptions.maxAge ? `Max-Age=${cookieOptions.maxAge}` : '',
+            ]
+              .filter(Boolean)
+              .join('; ')
+            
+            // Append to existing Set-Cookie header or create new one
+            const existingSetCookie = response.headers.get('set-cookie')
+            if (existingSetCookie) {
+              response.headers.set('set-cookie', `${existingSetCookie}, ${setCookieValue}`)
+            } else {
+              response.headers.set('set-cookie', setCookieValue)
             }
             
-            // Preserve maxAge if set, otherwise set defaults for auth cookies
-            if (cookie.options?.maxAge && typeof cookie.options.maxAge === 'number') {
-              cookieOptions.maxAge = cookie.options.maxAge
-            } else if (isAuthCookie) {
-              // Set reasonable expiration for auth cookies
-              if (name.includes('auth-token')) {
-                cookieOptions.maxAge = 60 * 60 * 24 * 7 // 7 days for access token
-              } else if (name.includes('auth-refresh')) {
-                cookieOptions.maxAge = 60 * 60 * 24 * 30 // 30 days for refresh token
-              }
-            }
-            
-            // PRODUCTION FIX: Log cookie writes in production for debugging (only first few times)
-            if (isProduction && isAuthCookie && writtenCookies.size <= 2) {
-              console.error(`[Middleware Production] Setting auth cookie: ${name.substring(0, 30)}... | Secure: ${cookieOptions.secure} | HttpOnly: ${cookieOptions.httpOnly} | Path: ${cookieOptions.path}`)
-            }
-            
-            // Write cookie to response
-            response.cookies.set(name, value, cookieOptions)
             writtenCookies.add(name)
             
+            // PRODUCTION DEBUG: Log cookie writes (only first few times)
+            if (isProduction && cookieOptions.httpOnly && writtenCookies.size <= 2) {
+              console.error(`[Middleware Production] Setting auth cookie: ${name.substring(0, 30)}... | Secure: ${cookieOptions.secure} | HttpOnly: ${cookieOptions.httpOnly} | Path: ${cookieOptions.path} | Domain: ${cookieOptions.domain || '(auto)'}`)
+            }
           })
         },
       },
@@ -120,8 +156,7 @@ export async function middleware(request: NextRequest) {
   const { data: { user }, error: userError } = await supabase.auth.getUser()
   
   const { pathname } = request.nextUrl
-  const isProduction = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production'
-  
+
   // PRODUCTION FIX: After getUser(), check if cookies were written to response
   // If not, manually extract and set them from the Supabase client
   const cookiesAfterGetUser = response.cookies.getAll()
@@ -150,31 +185,36 @@ export async function middleware(request: NextRequest) {
       }
       
       incomingAuthCookies.forEach((cookie) => {
-        const isAuthCookie = cookie.name.includes('auth-token') || cookie.name.includes('auth-refresh')
-        const cookieOptions: {
-          path: string
-          sameSite: 'lax' | 'strict' | 'none'
-          httpOnly: boolean
-          secure: boolean
-          maxAge?: number
-        } = {
-          path: '/',
-          sameSite: 'lax',
-          httpOnly: isAuthCookie,
-          secure: isProduction,
-        }
+        // Use the same explicit cookie options function
+        const cookieOptions = getCookieOptions(cookie.name, cookie.value)
         
-        // Set maxAge for auth cookies
-        if (isAuthCookie) {
-          if (cookie.name.includes('auth-token')) {
-            cookieOptions.maxAge = 60 * 60 * 24 * 7 // 7 days
-          } else if (cookie.name.includes('auth-refresh')) {
-            cookieOptions.maxAge = 60 * 60 * 24 * 30 // 30 days
-          }
-        }
+        // Set on response.cookies
+        response.cookies.set(cookie.name, cookie.value, {
+          path: cookieOptions.path,
+          sameSite: cookieOptions.sameSite,
+          httpOnly: cookieOptions.httpOnly,
+          secure: cookieOptions.secure,
+          maxAge: cookieOptions.maxAge,
+        })
         
-        // CRITICAL: Explicitly set cookie on response
-        response.cookies.set(cookie.name, cookie.value, cookieOptions)
+        // CRITICAL FIX: Also set via response.headers.set('set-cookie', ...) for Vercel
+        const setCookieValue = [
+          `${cookie.name}=${cookie.value}`,
+          `Path=${cookieOptions.path}`,
+          `SameSite=${cookieOptions.sameSite}`,
+          cookieOptions.secure ? 'Secure' : '',
+          cookieOptions.httpOnly ? 'HttpOnly' : '',
+          cookieOptions.maxAge ? `Max-Age=${cookieOptions.maxAge}` : '',
+        ]
+          .filter(Boolean)
+          .join('; ')
+        
+        const existingSetCookie = response.headers.get('set-cookie')
+        if (existingSetCookie) {
+          response.headers.set('set-cookie', `${existingSetCookie}, ${setCookieValue}`)
+        } else {
+          response.headers.set('set-cookie', setCookieValue)
+        }
       })
     }
   }
@@ -226,60 +266,50 @@ export async function middleware(request: NextRequest) {
     allResponseCookies.forEach((cookie) => {
       const { name, value } = cookie
       
-      // Get original cookie options if available, otherwise use defaults
-      // ENTERPRISE-GRADE: Apply same security settings as main cookie writes
-      const isAuthCookie = cookie.name.includes('auth-token') || cookie.name.includes('auth-refresh')
+      // Use the same explicit cookie options function
+      const cookieOptions = getCookieOptions(name, value)
       
-      const cookieOptions: {
-        path: string
-        sameSite: 'lax' | 'strict' | 'none'
-        httpOnly: boolean
-        secure: boolean
-        maxAge?: number
-      } = {
-        path: '/', // Ensure path is set
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
-        // ENTERPRISE-GRADE: Auth cookies should be HttpOnly
-        httpOnly: isAuthCookie ? true : (cookie.httpOnly ?? false),
+      // Set on redirect response.cookies
+      redirectResponse.cookies.set(name, value, {
+        path: cookieOptions.path,
+        sameSite: cookieOptions.sameSite,
+        httpOnly: cookieOptions.httpOnly,
+        secure: cookieOptions.secure,
+        maxAge: cookieOptions.maxAge,
+      })
+      
+      // CRITICAL FIX: Also set via redirectResponse.headers.set('set-cookie', ...) for Vercel
+      const setCookieValue = [
+        `${name}=${value}`,
+        `Path=${cookieOptions.path}`,
+        `SameSite=${cookieOptions.sameSite}`,
+        cookieOptions.secure ? 'Secure' : '',
+        cookieOptions.httpOnly ? 'HttpOnly' : '',
+        cookieOptions.maxAge ? `Max-Age=${cookieOptions.maxAge}` : '',
+      ]
+        .filter(Boolean)
+        .join('; ')
+      
+      const existingSetCookie = redirectResponse.headers.get('set-cookie')
+      if (existingSetCookie) {
+        redirectResponse.headers.set('set-cookie', `${existingSetCookie}, ${setCookieValue}`)
+      } else {
+        redirectResponse.headers.set('set-cookie', setCookieValue)
       }
-      
-      // Preserve maxAge if it was set
-      if ('maxAge' in cookie && typeof cookie.maxAge === 'number') {
-        cookieOptions.maxAge = cookie.maxAge
-      } else if (isAuthCookie) {
-        // Set defaults for auth cookies if not set
-        if (cookie.name.includes('auth-token')) {
-          cookieOptions.maxAge = 60 * 60 * 24 * 7 // 7 days
-        } else if (cookie.name.includes('auth-refresh')) {
-          cookieOptions.maxAge = 60 * 60 * 24 * 30 // 30 days
-        }
-      }
-      
-      redirectResponse.cookies.set(name, value, cookieOptions)
     })
     
     return redirectResponse
   }
 
-  // CRITICAL FIX: Early return for /login, /auth, and API routes to prevent infinite redirect loops
-  // If user is already on /login or /auth, return immediately without any redirect logic
-  // Also exclude API routes from middleware processing
-  if (pathname.startsWith('/api/')) {
-    // API routes should not be processed by middleware (they handle their own auth)
+  // CRITICAL FIX: With refined matcher, /login and /auth are already excluded
+  // But we keep this check as a safety net in case matcher changes
+  // Early return for /login, /auth, and API routes to prevent infinite redirect loops
+  if (pathname === '/login' || pathname.startsWith('/auth/') || pathname.startsWith('/api/')) {
+    // These routes should not be processed by middleware
+    // /login is completely excluded via matcher
+    // /auth/* routes are excluded via matcher
+    // /api/* routes are excluded via matcher
     return response
-  }
-  
-  if (pathname === '/login' || pathname.startsWith('/auth/')) {
-    // Only redirect away from /login if user is authenticated (handled later)
-    // Otherwise, allow access to /login without redirecting
-    if (pathname === '/login' && !user) {
-      return response
-    }
-    // For /auth/* routes, always return immediately
-    if (pathname.startsWith('/auth/')) {
-      return response
-    }
   }
 
   // Admin whitelist emails (fallback only)
@@ -337,7 +367,7 @@ export async function middleware(request: NextRequest) {
           console.error('[Middleware] ❌ Cannot proceed: RLS recursion error and no email fallback')
           // CRITICAL FIX: Don't redirect if already on /login - this causes infinite loop
           if (!isLoginPath) {
-            return redirect('/login', 'RLS policy error - contact admin')
+          return redirect('/login', 'RLS policy error - contact admin')
           }
           // If already on /login, allow access and let client handle error
           return response
@@ -376,7 +406,7 @@ export async function middleware(request: NextRequest) {
       
       // Only redirect if not already on /login
       if (!isLoginPath) {
-        return redirect('/login', 'Profile not found - contact admin')
+      return redirect('/login', 'Profile not found - contact admin')
       }
       // If already on /login, allow access
       return response
@@ -395,14 +425,14 @@ export async function middleware(request: NextRequest) {
     if (isAdminPath && userRole !== 'admin' && !isAdminEmail) {
       console.warn(`[Middleware] 🚫 RBAC Violation: User ${user.id} (role: ${userRole}) attempted to access /admin`)
       if (!isLoginPath) {
-        return redirect('/login', 'Non-admin attempt to access /admin')
+      return redirect('/login', 'Non-admin attempt to access /admin')
       }
     }
 
     if (isDriverPath && userRole !== 'driver' && !isAdminEmail) {
       console.warn(`[Middleware] 🚫 RBAC Violation: User ${user.id} (role: ${userRole}) attempted to access /driver`)
       if (!isLoginPath) {
-        return redirect('/login', 'Unauthorized access to /driver')
+      return redirect('/login', 'Unauthorized access to /driver')
       }
     }
     
@@ -501,14 +531,36 @@ export async function middleware(request: NextRequest) {
       if (lastResortCookies.length > 0) {
         console.error(`[Middleware Production] 🔧 LAST RESORT: Re-attaching ${lastResortCookies.length} cookie(s) from request`)
         lastResortCookies.forEach((cookie) => {
-          const isAuthCookie = cookie.name.includes('auth-token') || cookie.name.includes('auth-refresh')
+          // Use the same explicit cookie options function
+          const cookieOptions = getCookieOptions(cookie.name, cookie.value)
+          
+          // Set on response.cookies
           response.cookies.set(cookie.name, cookie.value, {
-            path: '/',
-            sameSite: 'lax',
-            httpOnly: isAuthCookie,
-            secure: isProduction,
-            maxAge: isAuthCookie ? (cookie.name.includes('auth-token') ? 60 * 60 * 24 * 7 : 60 * 60 * 24 * 30) : undefined
+            path: cookieOptions.path,
+            sameSite: cookieOptions.sameSite,
+            httpOnly: cookieOptions.httpOnly,
+            secure: cookieOptions.secure,
+            maxAge: cookieOptions.maxAge,
           })
+          
+          // CRITICAL FIX: Also set via response.headers.set('set-cookie', ...) for Vercel
+          const setCookieValue = [
+            `${cookie.name}=${cookie.value}`,
+            `Path=${cookieOptions.path}`,
+            `SameSite=${cookieOptions.sameSite}`,
+            cookieOptions.secure ? 'Secure' : '',
+            cookieOptions.httpOnly ? 'HttpOnly' : '',
+            cookieOptions.maxAge ? `Max-Age=${cookieOptions.maxAge}` : '',
+          ]
+            .filter(Boolean)
+            .join('; ')
+          
+          const existingSetCookie = response.headers.get('set-cookie')
+          if (existingSetCookie) {
+            response.headers.set('set-cookie', `${existingSetCookie}, ${setCookieValue}`)
+    } else {
+            response.headers.set('set-cookie', setCookieValue)
+          }
         })
       }
     }
@@ -520,13 +572,23 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Match all request paths except for the ones starting with:
-     * - api/ (API routes - handle their own auth)
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * - public folder files (images, etc.)
+     * CRITICAL FIX: Only match protected routes to prevent /login from being processed
+     * This ensures /login page is completely untouched by middleware
+     * 
+     * Matches:
+     * - /admin/:path* (all admin routes)
+     * - /driver/:path* (all driver routes)
+     * - /onboarding (driver onboarding)
+     * 
+     * Excludes:
+     * - /login (completely excluded - no middleware processing)
+     * - /auth/* (auth callbacks - excluded)
+     * - /api/* (API routes - excluded)
+     * - /_next/* (Next.js internals - excluded)
+     * - Static files (images, fonts, etc. - excluded)
      */
-    '/((?!api/|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|woff|woff2|ttf|eot)$).*)',
+    '/admin/:path*',
+    '/driver/:path*',
+    '/onboarding',
   ],
 }
