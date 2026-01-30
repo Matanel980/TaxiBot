@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import type { User, Session } from '@supabase/supabase-js'
@@ -104,16 +104,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe()
   }, [supabase])
 
-  const signOut = async () => {
+  // CRITICAL OPTIMIZATION: Memoize signOut to prevent unnecessary re-renders
+  const signOut = useCallback(async () => {
     await supabase.auth.signOut()
     setUser(null)
     setSession(null)
     setProfile(null)
     router.push('/login')
-  }
+  }, [supabase, router])
+
+  // CRITICAL OPTIMIZATION: Memoize context value to prevent unnecessary re-renders
+  const contextValue = useMemo(() => ({
+    user,
+    session,
+    profile,
+    loading,
+    signOut,
+  }), [user, session, profile, loading, signOut])
 
   return (
-    <AuthContext.Provider value={{ user, session, profile, loading, signOut }}>
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   )

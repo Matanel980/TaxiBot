@@ -3,7 +3,7 @@
 // Force dynamic rendering - prevent static generation and caching
 export const dynamic = 'force-dynamic'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase'
 import { useGeolocation } from '@/lib/hooks/useGeolocation'
@@ -702,16 +702,21 @@ export default function DriverDashboard() {
       {/* Map Background - Fixed on mobile */}
       {/* PROGRESSIVE RENDERING: Map shows immediately with critical data (latitude/longitude) */}
       {/* LAYOUT ANIMATION: Map smoothly resizes when sheet expands/collapses */}
-      <motion.div 
+      <section 
         className="fixed inset-0 z-0"
-        layout
-        transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+        aria-label="Map View"
       >
-        <DriverMap 
-          userPosition={userPosition} 
-          heading={geolocationHeading ?? profile?.heading ?? null} 
-        />
-      </motion.div>
+        <motion.div 
+          className="h-full w-full"
+          layout
+          transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+        >
+          <DriverMap 
+            userPosition={userPosition} 
+            heading={geolocationHeading ?? profile?.heading ?? null} 
+          />
+        </motion.div>
+      </section>
       
       {/* Collapsible Dashboard Sheet - Mobile Only */}
       {/* On desktop, renders normally without bottom sheet */}
@@ -734,56 +739,62 @@ export default function DriverDashboard() {
 
         {/* Top Bar - Clickable Profile Card Header */}
         {/* PROGRESSIVE RENDERING: Shows with critical data (full_name), enhanced when secondary data loads */}
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="glass-card-dark rounded-xl sm:rounded-2xl overflow-hidden"
-          layout
-        >
-          <button
-            onClick={() => setProfileCardOpen(!profileCardOpen)}
-            className="w-full flex items-center justify-between p-3 sm:p-4 hover:bg-white/5 transition-colors active:bg-white/10"
+        <header>
+          <motion.article
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="glass-card-dark rounded-xl sm:rounded-2xl overflow-hidden"
+            layout
           >
-            <div className="flex-1 min-w-0 text-right">
-              <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-white truncate">
-                שלום, {profile?.full_name || criticalData?.full_name || 'נהג'}
-              </h1>
-              <p className="text-xs sm:text-sm text-gray-400 flex items-center gap-1 mt-1 justify-end">
-                <Navigation size={12} className="sm:w-3.5 sm:h-3.5" />
-                GPS פעיל
-              </p>
-            </div>
-            <motion.div
-              animate={{ rotate: profileCardOpen ? 180 : 0 }}
-              transition={{ duration: 0.2 }}
-              className="flex-shrink-0 ml-3"
+            <button
+              onClick={() => setProfileCardOpen(!profileCardOpen)}
+              className="w-full flex items-center justify-between p-3 sm:p-4 hover:bg-white/5 transition-colors active:bg-white/10"
+              aria-label={profileCardOpen ? 'Collapse profile card' : 'Expand profile card'}
+              aria-expanded={profileCardOpen}
             >
-              <ChevronDown className="text-gray-400" size={20} />
-            </motion.div>
-          </button>
+              <div className="flex-1 min-w-0 text-right">
+                <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-white truncate">
+                  שלום, {profile?.full_name || criticalData?.full_name || 'נהג'}
+                </h1>
+                <p className="text-xs sm:text-sm text-gray-400 flex items-center gap-1 mt-1 justify-end">
+                  <Navigation size={12} className="sm:w-3.5 sm:h-3.5" aria-hidden="true" />
+                  GPS פעיל
+                </p>
+              </div>
+              <motion.div
+                animate={{ rotate: profileCardOpen ? 180 : 0 }}
+                transition={{ duration: 0.2 }}
+                className="flex-shrink-0 ml-3"
+                aria-hidden="true"
+              >
+                <ChevronDown className="text-gray-400" size={20} />
+              </motion.div>
+            </button>
 
-          {/* Expandable Profile Card Content */}
-          <motion.div
-            initial={false}
-            animate={{
-              height: profileCardOpen ? 'auto' : 0,
-              opacity: profileCardOpen ? 1 : 0
-            }}
-            transition={{ duration: 0.3, ease: 'easeInOut' }}
-            className="overflow-hidden"
-          >
-            <div className="px-3 sm:px-4 pb-4 sm:pb-6 pt-2">
-              {/* Swipe to Go Online - Centered and Mobile-Friendly */}
-              {/* PROGRESSIVE RENDERING: Works with critical data (is_online), full profile loads in background */}
-              <SwipeToGoOnline
-                isOnline={isOnline}
-                onToggle={handleToggleOnline}
-                loading={toggling}
-                driverName={profile?.full_name || criticalData?.full_name || ''}
-              />
-            </div>
-          </motion.div>
-        </motion.div>
+            {/* Expandable Profile Card Content */}
+            <motion.section
+              initial={false}
+              animate={{
+                height: profileCardOpen ? 'auto' : 0,
+                opacity: profileCardOpen ? 1 : 0
+              }}
+              transition={{ duration: 0.3, ease: 'easeInOut' }}
+              className="overflow-hidden"
+              aria-hidden={!profileCardOpen}
+            >
+              <div className="px-3 sm:px-4 pb-4 sm:pb-6 pt-2">
+                {/* Swipe to Go Online - Centered and Mobile-Friendly */}
+                {/* PROGRESSIVE RENDERING: Works with critical data (is_online), full profile loads in background */}
+                <SwipeToGoOnline
+                  isOnline={isOnline}
+                  onToggle={handleToggleOnline}
+                  loading={toggling}
+                  driverName={profile?.full_name || criticalData?.full_name || ''}
+                />
+              </div>
+            </motion.section>
+          </motion.article>
+        </header>
 
         {/* Queue Card - Responsive */}
         {/* PROGRESSIVE RENDERING: Only shows when secondary data (current_zone) is loaded */}
