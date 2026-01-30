@@ -8,6 +8,7 @@ export async function middleware(request: NextRequest) {
   
   // Filter cookies to only include current project's cookies
   const allCookies = request.cookies.getAll()
+  
   const filteredCookies = allCookies.filter(cookie => {
     // Only keep cookies that belong to current project or are Next.js cookies
     const isSupabaseCookie = cookie.name.includes('sb-') || cookie.name.includes('supabase')
@@ -15,20 +16,18 @@ export async function middleware(request: NextRequest) {
       // Extract project ID from cookie name (e.g., sb-zfzahgxrmlwotdzpjvhz-auth-token)
       const projectIdMatch = cookie.name.match(/sb-([^-]+)-/)
       const cookieProjectId = projectIdMatch?.[1]
+      const matches = cookieProjectId === supabaseProjectId
+      
       // Only keep if it matches current project
-      return cookieProjectId === supabaseProjectId
+      return matches
     }
     // Keep all non-Supabase cookies (Next.js, etc.)
     return true
   })
 
-  // Log cookie filtering
-  if (allCookies.length !== filteredCookies.length) {
-    console.log(`[Middleware] Filtered ${allCookies.length - filteredCookies.length} cookies from other projects`)
-  }
-
   // CRITICAL: Create response object that will be used throughout
   // This ensures all cookie updates go to the same response instance
+  // We pass the request object to ensure cookies are properly propagated
   let response = NextResponse.next({
     request: {
       headers: request.headers,
@@ -37,6 +36,7 @@ export async function middleware(request: NextRequest) {
 
   // Track cookies being written for debugging
   const writtenCookies = new Set<string>()
+  
 
   // Initialize Supabase client with proper cookie handling
   const supabase = createServerClient(
@@ -64,102 +64,153 @@ export async function middleware(request: NextRequest) {
             request.cookies.set(name, value)
             
             // Step 2: Set on response with explicit path and secure options (for browser)
+            // ENTERPRISE-GRADE: Enhanced cookie security settings
+            const isAuthCookie = name.includes('auth-token') || name.includes('auth-refresh')
+            
             const cookieOptions: {
               path: string
               sameSite: 'lax' | 'strict' | 'none'
-              httpOnly?: boolean
-              secure?: boolean
+              httpOnly: boolean
+              secure: boolean
               maxAge?: number
             } = {
               path: '/', // CRITICAL: Explicit path for cookie persistence
               sameSite: 'lax', // Allow cookies in cross-site requests
-              secure: process.env.NODE_ENV === 'production', // Secure in production
+              // ENTERPRISE-GRADE: Auth cookies should be HttpOnly to prevent XSS
+              httpOnly: isAuthCookie ? true : ((cookie.options?.httpOnly) ?? false),
+              secure: process.env.NODE_ENV === 'production', // Secure in production (HTTPS only)
             }
             
-            // Preserve httpOnly if set
-            if ('httpOnly' in cookie && typeof cookie.httpOnly === 'boolean') {
-              cookieOptions.httpOnly = cookie.httpOnly
-            }
-            
-            // Preserve maxAge if set
-            if ('maxAge' in cookie && typeof cookie.maxAge === 'number') {
-              cookieOptions.maxAge = cookie.maxAge
+            // Preserve maxAge if set, otherwise set defaults for auth cookies
+            if (cookie.options?.maxAge && typeof cookie.options.maxAge === 'number') {
+              cookieOptions.maxAge = cookie.options.maxAge
+            } else if (isAuthCookie) {
+              // Set reasonable expiration for auth cookies
+              if (name.includes('auth-token')) {
+                cookieOptions.maxAge = 60 * 60 * 24 * 7 // 7 days for access token
+              } else if (name.includes('auth-refresh')) {
+                cookieOptions.maxAge = 60 * 60 * 24 * 30 // 30 days for refresh token
+              }
             }
             
             // Write cookie to response
             response.cookies.set(name, value, cookieOptions)
             writtenCookies.add(name)
             
-            // Debug log for cookie writes
-            console.log(`[Cookie Write] Setting cookie: ${name.substring(0, 30)}... | Path: ${cookieOptions.path} | HttpOnly: ${cookieOptions.httpOnly ?? false} | Secure: ${cookieOptions.secure ?? false}`)
           })
         },
       },
     }
   )
 
-  // Use getUser() for reliable authentication (more reliable than getSession)
-  // This call may trigger cookie updates (token refresh, etc.)
-  const { data: { user }, error: userError } = await supabase.auth.getUser()
+  // CRITICAL: Refresh session first to ensure tokens are up-to-date
+  // This call will trigger cookie updates if tokens need refreshing
+  // We use getSession() which automatically refreshes expired tokens
+  const { data: { session }, error: sessionError } = await supabase.auth.getSession()
   
-  // CRITICAL: After getUser(), ensure any cookie updates are captured
-  // The setAll() callback above should have already updated response.cookies,
-  // but we verify here that cookies were written
-  if (writtenCookies.size > 0) {
-    console.log(`[Cookie Sync] ${writtenCookies.size} cookie(s) written after getUser():`, Array.from(writtenCookies))
+  
+  if (sessionError) {
+    console.error(`[Middleware] Error getting session:`, {
+      message: sessionError.message,
+      status: sessionError.status
+    })
+    
+    // GRACEFUL FAIL: If session refresh fails, clear cookies and redirect to login
+    // This prevents hanging on blank screens
+    if (sessionError.status === 401 || sessionError.message?.includes('JWT')) {
+      console.warn(`[Middleware] ⚠️ Session invalid - clearing cookies and redirecting to login`)
+      
+      // Clear all auth cookies
+      const allCookies = request.cookies.getAll()
+      const authCookies = allCookies.filter(c => 
+        c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
+      )
+      
+      const clearResponse = NextResponse.redirect(new URL('/login', request.url))
+      authCookies.forEach((cookie) => {
+        clearResponse.cookies.delete(cookie.name)
+      })
+      
+      return clearResponse
+    }
   }
   
-  const { pathname } = request.nextUrl
 
-  // LOGGING
-  console.log(`[Middleware] Path: ${pathname} | User ID: ${user?.id || 'none'} | Phone: ${user?.phone || 'none'}`)
+  // Use getUser() for reliable authentication (more reliable than getSession)
+  // This call may trigger additional cookie updates (token refresh, etc.)
+  const { data: { user }, error: userError } = await supabase.auth.getUser()
+  
+  const { pathname } = request.nextUrl
   
   if (userError) {
     console.error(`[Middleware] Error getting user:`, {
       message: userError.message,
       status: userError.status
     })
+    
+    // GRACEFUL FAIL: If user fetch fails (invalid token, expired, etc.), clear and redirect
+    if (userError.status === 401 || userError.message?.includes('JWT') || userError.message?.includes('token')) {
+      console.warn(`[Middleware] ⚠️ User authentication failed - clearing cookies and redirecting to login`)
+      
+      // Clear all auth cookies
+      const allCookies = request.cookies.getAll()
+      const authCookies = allCookies.filter(c => 
+        c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
+      )
+      
+      const clearResponse = NextResponse.redirect(new URL('/login', request.url))
+      authCookies.forEach((cookie) => {
+        clearResponse.cookies.delete(cookie.name)
+      })
+      
+      return clearResponse
+    }
   }
+
 
   // Helper for strict redirects with cookie propagation
   const redirect = (path: string, reason: string) => {
-    console.log(`[Middleware] Redirecting to ${path} | Reason: ${reason}`)
     const url = new URL(path, request.url)
     const redirectResponse = NextResponse.redirect(url)
     
     // CRITICAL: Copy ALL cookies from response to redirect response
     // This includes any cookies that Supabase set during getUser() or other auth calls
     const allResponseCookies = response.cookies.getAll()
-    console.log(`[Cookie Redirect] Copying ${allResponseCookies.length} cookie(s) to redirect response`)
     
     allResponseCookies.forEach((cookie) => {
       const { name, value } = cookie
       
       // Get original cookie options if available, otherwise use defaults
+      // ENTERPRISE-GRADE: Apply same security settings as main cookie writes
+      const isAuthCookie = cookie.name.includes('auth-token') || cookie.name.includes('auth-refresh')
+      
       const cookieOptions: {
         path: string
         sameSite: 'lax' | 'strict' | 'none'
-        httpOnly?: boolean
-        secure?: boolean
+        httpOnly: boolean
+        secure: boolean
         maxAge?: number
       } = {
         path: '/', // Ensure path is set
         sameSite: 'lax',
         secure: process.env.NODE_ENV === 'production',
-      }
-      
-      // Preserve httpOnly if it was set
-      if ('httpOnly' in cookie && typeof cookie.httpOnly === 'boolean') {
-        cookieOptions.httpOnly = cookie.httpOnly
+        // ENTERPRISE-GRADE: Auth cookies should be HttpOnly
+        httpOnly: isAuthCookie ? true : (cookie.httpOnly ?? false),
       }
       
       // Preserve maxAge if it was set
       if ('maxAge' in cookie && typeof cookie.maxAge === 'number') {
         cookieOptions.maxAge = cookie.maxAge
+      } else if (isAuthCookie) {
+        // Set defaults for auth cookies if not set
+        if (cookie.name.includes('auth-token')) {
+          cookieOptions.maxAge = 60 * 60 * 24 * 7 // 7 days
+        } else if (cookie.name.includes('auth-refresh')) {
+          cookieOptions.maxAge = 60 * 60 * 24 * 30 // 30 days
+        }
       }
       
       redirectResponse.cookies.set(name, value, cookieOptions)
-      console.log(`[Cookie Redirect] Copied cookie: ${name.substring(0, 30)}... to redirect`)
     })
     
     return redirectResponse
@@ -169,11 +220,6 @@ export async function middleware(request: NextRequest) {
   // CRITICAL: Return response AFTER Supabase has had a chance to update cookies
   // The getUser() call above may have triggered cookie updates, which are now in response.cookies
   if (pathname.startsWith('/auth/')) {
-    // Log cookies that will be returned
-    const authCookies = response.cookies.getAll()
-    if (authCookies.length > 0) {
-      console.log(`[Auth Route] Returning ${authCookies.length} cookie(s) for /auth/* route`)
-    }
     return response
   }
 
@@ -197,26 +243,6 @@ export async function middleware(request: NextRequest) {
       .eq('id', userId)
       .single()
     
-    // Debug logging: Show what the server sees
-    if (profile) {
-      console.log(`[Middleware Debug] Profile fetched:`, {
-        id: profile.id,
-        role: profile.role,
-        full_name: profile.full_name,
-        station_id: profile.station_id,
-        phone: profile.phone,
-        has_vehicle: !!profile.vehicle_number,
-        has_car_type: !!profile.car_type
-      })
-    } else if (error) {
-      console.log(`[Middleware Debug] Profile fetch error:`, {
-        code: error.code,
-        message: error.message,
-        hint: error.hint
-      })
-    } else {
-      console.log(`[Middleware Debug] Profile not found for user: ${userId}`)
-    }
     
     return { profile, error }
   }
@@ -253,7 +279,6 @@ export async function middleware(request: NextRequest) {
         // Other errors (profile not found, etc.)
         console.error(`[Middleware] Profile not found for user ${user.id}:`, error)
         if (isAdminEmail) {
-          console.log('[Middleware] Profile not found but admin email whitelisted')
         } else {
           return redirect('/login', 'Profile not found - contact admin')
         }
@@ -270,18 +295,24 @@ export async function middleware(request: NextRequest) {
     const carType = profile?.car_type || ''
     const stationId = profile?.station_id || null
 
-    // Log station isolation status (warn but don't block if null during transition)
-    if (profile && !stationId) {
-      console.warn(`[Middleware] ⚠️ User ${user.id} (${userRole}) has no station_id assigned - this is allowed during transition`)
-    }
 
     // 2. Strict Role-Based Access Control (RBAC)
+    // ENTERPRISE-GRADE: Server-side role validation before page render
     if (isAdminPath && userRole !== 'admin' && !isAdminEmail) {
+      console.warn(`[Middleware] 🚫 RBAC Violation: User ${user.id} (role: ${userRole}) attempted to access /admin`)
       return redirect('/login', 'Non-admin attempt to access /admin')
     }
 
     if (isDriverPath && userRole !== 'driver' && !isAdminEmail) {
+      console.warn(`[Middleware] 🚫 RBAC Violation: User ${user.id} (role: ${userRole}) attempted to access /driver`)
       return redirect('/login', 'Unauthorized access to /driver')
+    }
+    
+    // ENTERPRISE-GRADE: Additional security - ensure drivers cannot trigger admin-only features
+    // This is a defense-in-depth measure (RBAC is already enforced above)
+    if (userRole === 'driver' && isAdminPath) {
+      console.error(`[Middleware] ❌ CRITICAL: Driver ${user.id} attempted admin access - this should never happen after RBAC check`)
+      return redirect('/login', 'Security violation - contact admin')
     }
 
     // 3. Driver Onboarding Guard
@@ -343,21 +374,6 @@ export async function middleware(request: NextRequest) {
     response.headers.set('Pragma', 'no-cache')
   }
 
-  // CRITICAL: Before returning, verify cookies are in the response
-  // This ensures any cookies set by Supabase during auth calls are included
-  const finalCookies = response.cookies.getAll()
-  if (finalCookies.length > 0) {
-    console.log(`[Middleware] Returning response with ${finalCookies.length} cookie(s)`)
-    // Log Supabase auth cookies specifically
-    const authCookies = finalCookies.filter(c => c.name.includes('sb-') && c.name.includes('auth-token'))
-    if (authCookies.length > 0) {
-      console.log(`[Middleware] ✅ Auth cookies present: ${authCookies.map(c => c.name.substring(0, 30)).join(', ')}`)
-    } else {
-      console.warn(`[Middleware] ⚠️ No auth cookies found in response (this may cause session loss)`)
-    }
-  } else {
-    console.warn(`[Middleware] ⚠️ No cookies in response at all (this will cause session loss)`)
-  }
 
   return response
 }

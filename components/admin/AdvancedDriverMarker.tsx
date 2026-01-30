@@ -1,7 +1,8 @@
 'use client'
 
-import { useEffect, useState, useRef, useMemo } from 'react'
+import { useEffect, useRef, useMemo } from 'react'
 import type { Profile } from '@/lib/supabase'
+import { useMarkerInterpolation } from '@/lib/utils/marker-interpolation'
 import React from 'react'
 
 interface AdvancedDriverMarkerProps {
@@ -28,57 +29,26 @@ export const AdvancedDriverMarker = React.memo(({
   map
 }: AdvancedDriverMarkerProps) => {
   const markerRef = useRef<google.maps.marker.AdvancedMarkerElement | null>(null)
-  const [position, setPosition] = useState({ lat: driver.latitude || 0, lng: driver.longitude || 0 })
-  const [heading, setHeading] = useState(driver.heading || 0)
-  const animationFrameRef = useRef<number | null>(null)
 
-  // Smooth interpolation (glide) effect for position updates
-  useEffect(() => {
-    if (!driver.latitude || !driver.longitude) return
-
-    const targetLat = driver.latitude
-    const targetLng = driver.longitude
-    const targetHeading = driver.heading || 0
-    
-    const startLat = position.lat
-    const startLng = position.lng
-    const startHeading = heading
-
-    const duration = 2000 // 2 seconds glide
-    const startTime = performance.now()
-
-    const animate = (currentTime: number) => {
-      const elapsed = currentTime - startTime
-      const progress = Math.min(elapsed / duration, 1)
-      
-      // Easing function for smooth start/stop
-      const easeProgress = 1 - Math.pow(1 - progress, 3)
-
-      const currentLat = startLat + (targetLat - startLat) * easeProgress
-      const currentLng = startLng + (targetLng - startLng) * easeProgress
-      
-      // Handle circular heading interpolation
-      let diff = targetHeading - startHeading
-      if (diff > 180) diff -= 360
-      if (diff < -180) diff += 360
-      const currentHeading = startHeading + diff * easeProgress
-
-      setPosition({ lat: currentLat, lng: currentLng })
-      setHeading(currentHeading)
-
-      if (progress < 1) {
-        animationFrameRef.current = requestAnimationFrame(animate)
-      }
+  // SMOOTH INTERPOLATION: Use shared utility for smooth marker movement
+  // Handles 0-360 heading wrap-around and prevents "supersonic" movements
+  // Optimized for performance with 1000+ concurrent markers
+  // Memory leak prevention: Shared utility handles cleanup automatically
+  const { position, heading } = useMarkerInterpolation(
+    driver.latitude && driver.longitude 
+      ? { lat: driver.latitude, lng: driver.longitude } 
+      : null,
+    driver.heading ?? null,
+    {
+      duration: 2000,           // 2 seconds glide
+      minDistanceMeters: 5,     // Skip interpolation for tiny movements (< 5m)
+      maxDistanceMeters: 200,   // Jump instantly for large movements (> 200m) to avoid "supersonic" movement
+      enabled: true,
     }
-
-    animationFrameRef.current = requestAnimationFrame(animate)
-
-    return () => {
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current)
-    }
-  }, [driver.latitude, driver.longitude, driver.heading])
+  )
 
   // Create custom PinElement for AdvancedMarkerElement
+  // Uses interpolated heading for smooth rotation
   const pinElement = useMemo(() => {
     if (!google?.maps?.marker) {
       console.warn('[AdvancedDriverMarker] AdvancedMarkerElement API not available, falling back to classic Marker')
@@ -111,8 +81,9 @@ export const AdvancedDriverMarker = React.memo(({
     })
 
     // Create container for rotation
+    // Uses interpolated heading for smooth rotation (handles 0-360 wrap-around)
     const container = document.createElement('div')
-    container.style.transform = `rotate(${heading}deg)`
+    container.style.transform = `rotate(${heading ?? 0}deg)`
     container.style.transition = 'transform 0.3s ease-out'
     container.appendChild(pin.element)
 
@@ -120,8 +91,9 @@ export const AdvancedDriverMarker = React.memo(({
   }, [google, driver.is_online, isSelected, heading, isDisconnected, isStale])
 
   // Create and update AdvancedMarkerElement
+  // Uses interpolated position for smooth movement
   useEffect(() => {
-    if (!google?.maps?.marker || !map || !driver.latitude || !driver.longitude) {
+    if (!google?.maps?.marker || !map || !position) {
       return
     }
 
@@ -140,13 +112,14 @@ export const AdvancedDriverMarker = React.memo(({
         onSelect()
       })
     } else {
-      // Update existing marker
+      // Update existing marker with interpolated position
       markerRef.current.position = { lat: position.lat, lng: position.lng }
       markerRef.current.content = pinElement
       markerRef.current.zIndex = isSelected ? 1000 : (isDisconnected ? 0 : 500)
     }
 
-    // Cleanup
+    // MEMORY LEAK PREVENTION: Proper cleanup when component unmounts or driver disconnects
+    // This is critical for 1000+ concurrent markers
     return () => {
       if (markerRef.current) {
         markerRef.current.map = null
@@ -157,13 +130,17 @@ export const AdvancedDriverMarker = React.memo(({
 
   // Don't render anything - AdvancedMarkerElement is managed via Google Maps API
   return null
-  }, (prevProps, nextProps) => {
+}, (prevProps, nextProps) => {
+  // PERFORMANCE: React.memo comparison to prevent unnecessary re-renders
+  // Critical for 1000+ concurrent markers
+  // Only re-render if driver data actually changed
   return (
     prevProps.driver.id === nextProps.driver.id &&
     prevProps.driver.latitude === nextProps.driver.latitude &&
     prevProps.driver.longitude === nextProps.driver.longitude &&
     prevProps.driver.heading === nextProps.driver.heading &&
     prevProps.driver.updated_at === nextProps.driver.updated_at &&
+    prevProps.driver.is_online === nextProps.driver.is_online &&
     prevProps.isSelected === nextProps.isSelected &&
     prevProps.isDisconnected === nextProps.isDisconnected &&
     prevProps.isStale === nextProps.isStale

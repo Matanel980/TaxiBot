@@ -15,6 +15,7 @@ import { geometryToGooglePaths, featureToZone } from '@/lib/spatial-utils'
 import { useDriverTrips } from '@/lib/hooks/useDriverTrips'
 import { DriverDetailSheet } from './DriverDetailSheet'
 import { RouteVisualization } from './RouteVisualization'
+import { useMarkerInterpolation } from '@/lib/utils/marker-interpolation'
 import React from 'react'
 
 // Zone polygon component
@@ -67,7 +68,8 @@ interface AdminLiveMapClientProps {
 }
 
 // Animated driver marker with smooth transitions
-const DriverMarker = ({ 
+// REFACTORED: Uses shared interpolation utility for DRY code and better performance
+const DriverMarker = React.memo(({ 
   driver, 
   isSelected,
   onSelect,
@@ -82,62 +84,26 @@ const DriverMarker = ({
   isStale?: boolean
   google: typeof window.google
 }) => {
-  const [position, setPosition] = useState({ lat: driver.latitude || 0, lng: driver.longitude || 0 })
-  const [heading, setHeading] = useState(driver.heading || 0)
   const [showInfoWindow, setShowInfoWindow] = useState(false)
-  const animationFrameRef = useRef<number | null>(null)
 
-  // Smooth interpolation (glide) effect
-  useEffect(() => {
-    if (!driver.latitude || !driver.longitude) return
-
-    const targetLat = driver.latitude
-    const targetLng = driver.longitude
-    const targetHeading = driver.heading || 0
-    
-    const startLat = position.lat
-    const startLng = position.lng
-    const startHeading = heading
-
-    const duration = 2000 // 2 seconds glide
-    const startTime = performance.now()
-
-    const animate = (currentTime: number) => {
-      const elapsed = currentTime - startTime
-      const progress = Math.min(elapsed / duration, 1)
-      
-      // Easing function for smooth start/stop
-      const easeProgress = 1 - Math.pow(1 - progress, 3)
-
-      const currentLat = startLat + (targetLat - startLat) * easeProgress
-      const currentLng = startLng + (targetLng - startLng) * easeProgress
-      
-      // Handle circular heading interpolation
-      let diff = targetHeading - startHeading
-      if (diff > 180) diff -= 360
-      if (diff < -180) diff += 360
-      const currentHeading = startHeading + diff * easeProgress
-
-      setPosition({ lat: currentLat, lng: currentLng })
-      setHeading(currentHeading)
-
-      if (progress < 1) {
-        animationFrameRef.current = requestAnimationFrame(animate)
-      }
+  // SMOOTH INTERPOLATION: Use shared utility for smooth marker movement
+  // Handles 0-360 heading wrap-around and prevents "supersonic" movements
+  // Optimized for performance with 1000+ concurrent markers
+  const { position, heading } = useMarkerInterpolation(
+    driver.latitude && driver.longitude 
+      ? { lat: driver.latitude, lng: driver.longitude } 
+      : null,
+    driver.heading ?? null,
+    {
+      duration: 2000,           // 2 seconds glide
+      minDistanceMeters: 5,     // Skip interpolation for tiny movements (< 5m)
+      maxDistanceMeters: 200,   // Jump instantly for large movements (> 200m) to avoid "supersonic" movement
+      enabled: true,
     }
+  )
 
-    animationFrameRef.current = requestAnimationFrame(animate)
-
-    return () => {
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current)
-    }
-  }, [driver.latitude, driver.longitude, driver.heading])
-
-  if (!driver.latitude || !driver.longitude) return null
-
-  // Guard: Ensure google is available
-  if (!google || !google.maps) {
-    console.error('[DriverMarker] Google Maps API not available')
+  // Guard: Ensure google is available and position is valid
+  if (!google || !google.maps || !position) {
     return null
   }
 
@@ -147,7 +113,10 @@ const DriverMarker = ({
     status = 'available' // Trip status is handled via icon logic in main client if needed
   }
   
-  const icon = createTaxiIcon(status, google, heading)
+  // Create icon with interpolated heading for smooth rotation
+  const icon = useMemo(() => {
+    return createTaxiIcon(status, google, heading ?? 0)
+  }, [status, google, heading])
   
   // Adjust icon opacity if disconnected (presence heartbeat failed)
   const markerIcon = useMemo(() => {
@@ -183,7 +152,23 @@ const DriverMarker = ({
       )}
     </>
   )
-}
+}, (prevProps, nextProps) => {
+  // PERFORMANCE: React.memo comparison to prevent unnecessary re-renders
+  // Critical for 1000+ concurrent markers
+  return (
+    prevProps.driver.id === nextProps.driver.id &&
+    prevProps.driver.latitude === nextProps.driver.latitude &&
+    prevProps.driver.longitude === nextProps.driver.longitude &&
+    prevProps.driver.heading === nextProps.driver.heading &&
+    prevProps.driver.updated_at === nextProps.driver.updated_at &&
+    prevProps.driver.is_online === nextProps.driver.is_online &&
+    prevProps.isSelected === nextProps.isSelected &&
+    prevProps.isDisconnected === nextProps.isDisconnected &&
+    prevProps.isStale === nextProps.isStale
+  )
+})
+
+DriverMarker.displayName = 'DriverMarker'
 
 export function AdminLiveMapClient({ 
   drivers: initialDrivers, 

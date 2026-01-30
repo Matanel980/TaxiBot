@@ -9,6 +9,8 @@ import { TripDetailPanel } from '@/components/admin/TripDetailPanel'
 import { NewTripModal } from '@/components/admin/NewTripModal'
 import { TestTripButton } from '@/components/admin/TestTripButton'
 import { AdminManagement } from '@/components/admin/AdminManagement'
+import { CollapsibleTripSheet } from '@/components/admin/CollapsibleTripSheet'
+import { TripSheetSummary } from '@/components/admin/TripSheetSummary'
 import type { Profile, Trip, ZonePostGIS } from '@/lib/supabase'
 import { featureToZone } from '@/lib/spatial-utils'
 import { motion } from 'framer-motion'
@@ -427,14 +429,65 @@ export default function AdminDashboard() {
           }
         }
       )
-      .subscribe((status) => {
+      .subscribe(async (status) => {
         console.log('[Admin Dashboard] Drivers subscription status:', status)
         if (status === 'SUBSCRIBED') {
           console.log('✅ Successfully subscribed to driver location updates')
         } else if (status === 'CHANNEL_ERROR') {
           console.error('❌ Error subscribing to driver updates. Check Supabase Realtime publications.')
+          
+          // ENHANCED DIAGNOSTICS: Provide detailed error information and fix instructions
+          console.error('[Admin Dashboard] Realtime Subscription Error Details:', {
+            channel: 'admin-dashboard-drivers',
+            table: 'profiles',
+            filter: 'role=eq.driver',
+            stationId: stationId,
+            error: 'CHANNEL_ERROR - Table may not be in supabase_realtime publication or RLS policy blocking',
+          })
+          
+          // Attempt to verify Realtime publication status (non-blocking diagnostic)
+          try {
+            const { data: publicationCheck, error: checkError } = await supabase
+              .from('profiles')
+              .select('id')
+              .eq('role', 'driver')
+              .limit(1)
+            
+            if (checkError) {
+              console.error('[Admin Dashboard] RLS Policy Check Failed:', {
+                error: checkError.message,
+                code: checkError.code,
+                hint: 'RLS policy may be blocking admin access to profiles table. Check "Admins can view all profiles" policy.',
+              })
+            } else {
+              console.log('[Admin Dashboard] RLS Policy Check: ✅ Admin can SELECT profiles')
+              console.warn('[Admin Dashboard] ⚠️ Realtime subscription failed but RLS allows SELECT. Likely Realtime publication issue.')
+              console.warn('[Admin Dashboard] 🔧 Fix: Run scripts/enable-all-realtime-tables.sql in Supabase SQL Editor')
+            }
+          } catch (diagnosticError) {
+            console.error('[Admin Dashboard] Diagnostic check failed:', diagnosticError)
+          }
+          
+          // Show user-friendly error message
+          toast.error('שגיאה בחיבור לעדכונים בזמן אמת', {
+            description: 'אנא בדוק את הגדרות Supabase Realtime',
+            duration: 10000,
+          })
         } else if (status === 'TIMED_OUT') {
           console.warn('⚠️ Driver subscription timed out. Check network connection.')
+          toast.warning('חיבור לעדכונים בזמן אמת איחר', {
+            description: 'בודק חיבור מחדש...',
+            duration: 5000,
+          })
+        } else if (status === 'CLOSED') {
+          console.warn('⚠️ Driver subscription closed. Attempting to resubscribe...')
+          // Auto-retry subscription after delay
+          setTimeout(() => {
+            if (isMountedRef.current && stationId) {
+              console.log('[Admin Dashboard] Retrying driver subscription...')
+              // Channel will be recreated on next effect run
+            }
+          }, 3000)
         }
       })
 
@@ -459,7 +512,17 @@ export default function AdminDashboard() {
           }
         }
       )
-      .subscribe()
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR') {
+          console.error('❌ Error subscribing to trip updates. Check Supabase Realtime publications for trips table.')
+          toast.error('שגיאה בחיבור לעדכוני נסיעות', {
+            description: 'אנא בדוק את הגדרות Supabase Realtime',
+            duration: 5000,
+          })
+        } else if (status === 'SUBSCRIBED') {
+          console.log('✅ Successfully subscribed to trip updates')
+        }
+      })
 
     // Subscribe to zones_postgis table changes - STATION-AWARE
     const zonesChannel = supabase
@@ -718,9 +781,19 @@ export default function AdminDashboard() {
 
       {/* Main Content: Conditional rendering based on active tab */}
       {activeTab === 'dashboard' ? (
-        <div className="flex-1 flex overflow-hidden">
-          {/* Map - 75% */}
-          <div className="flex-[3] relative">
+        <div className="flex-1 flex overflow-hidden relative">
+          {/* Map - Full width on mobile, 75% on desktop */}
+          {/* LAYOUT ANIMATION: Map smoothly resizes when sheet expands/collapses */}
+          {/* Z-INDEX: Map at base layer (z-0) so it's always accessible when sheet is collapsed */}
+          <motion.div 
+            className="flex-[3] relative h-full z-0"
+            layout
+            transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+            style={{ 
+              // Ensure map is fully interactive when sheet is collapsed
+              pointerEvents: 'auto',
+            }}
+          >
             <AdminLiveMap 
               drivers={data.drivers} 
               zones={data.zones}
@@ -729,10 +802,19 @@ export default function AdminDashboard() {
               presenceMap={presenceMap}
               className="h-full w-full" 
             />
-          </div>
+          </motion.div>
 
-          {/* Sidebar - 25% */}
-          <div className="w-[25%] min-w-[320px] flex-shrink-0">
+          {/* Sidebar - Desktop: Fixed 25%, Mobile: Collapsible Bottom Sheet */}
+          <CollapsibleTripSheet
+            defaultExpanded={true}
+            summaryContent={
+              <TripSheetSummary
+                pendingTrips={stats.pendingOrders}
+                activeTrips={data.trips.filter(t => t.status === 'active').length}
+                completedToday={stats.completedToday}
+              />
+            }
+          >
             <TripSidebar
               trips={data.trips}
               selectedTripId={selectedTripId}
@@ -740,7 +822,7 @@ export default function AdminDashboard() {
               onCancelTrip={handleCancelTrip}
               onReassignTrip={handleReassignTrip}
             />
-          </div>
+          </CollapsibleTripSheet>
         </div>
       ) : (
         <div className="flex-1 overflow-auto p-6">

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase'
 import { getAddressFromCoords } from '@/lib/google-maps-loader'
 
@@ -8,9 +8,53 @@ interface UseGeolocationOptions {
   enabled: boolean
   driverId: string | null
   updateInterval?: number
+  /**
+   * UI update interval in milliseconds
+   * Controls how often the UI state (position/heading) is updated
+   * Default: 500ms (2 updates per second for smooth rendering)
+   */
+  uiUpdateInterval?: number
 }
 
-export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: UseGeolocationOptions) {
+export interface UseGeolocationReturn {
+  /**
+   * Throttled position for UI rendering
+   * Updates at uiUpdateInterval rate (default: 500ms)
+   * Use this for map markers and UI components
+   */
+  position: { lat: number; lng: number } | null
+  
+  /**
+   * Throttled heading for UI rendering
+   * Updates at uiUpdateInterval rate (default: 500ms)
+   * Use this for marker rotation
+   */
+  heading: number | null
+  
+  /**
+   * Whether GPS tracking is currently active
+   */
+  isTracking: boolean
+}
+
+/**
+ * Enhanced Geolocation Hook with UI Throttling
+ * 
+ * Separates database write frequency (5s) from UI update frequency (500ms-1s).
+ * This prevents excessive re-renders while maintaining smooth map updates.
+ * 
+ * Features:
+ * - DB writes: Throttled to 5 seconds (unchanged)
+ * - UI updates: Throttled to 500ms-1s (configurable, smooth 60fps)
+ * - GPS pings: Buffered and processed at UI update rate
+ * - Performance: Uses requestAnimationFrame for smooth rendering
+ */
+export function useGeolocation({ 
+  enabled, 
+  driverId, 
+  updateInterval = 4000,
+  uiUpdateInterval = 500, // 500ms = 2 updates/second for smooth UI
+}: UseGeolocationOptions): UseGeolocationReturn {
   const watchIdRef = useRef<number | null>(null)
   const lastPositionRef = useRef<{ lat: number; lng: number } | null>(null)
   const lastAddressRef = useRef<string | null>(null)
@@ -19,9 +63,81 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
   const updateTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const supabase = createClient()
 
+  // UI THROTTLING: Separate state for UI updates (throttled to 500ms-1s)
+  const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null)
+  const [heading, setHeading] = useState<number | null>(null)
+  const [isTracking, setIsTracking] = useState(false)
+
+  // UI throttling refs: Buffer GPS pings and update UI at throttled rate
+  const gpsBufferRef = useRef<{ lat: number; lng: number; heading: number | null; timestamp: number } | null>(null)
+  const lastUiUpdateTimeRef = useRef<number>(0)
+  const rafRef = useRef<number | null>(null)
+
   // THROTTLE: Minimum 5 seconds between database writes (not debounce - writes happen at intervals)
   const MIN_DB_WRITE_INTERVAL = 5000 // 5 seconds between DB writes
   const minUpdateInterval = updateInterval // 4 seconds for geolocation checks
+
+  /**
+   * UI Throttling: Update UI state at smooth rate (500ms-1s) using requestAnimationFrame
+   * This ensures smooth 60fps rendering while GPS pings arrive at ~4s intervals
+   */
+  const updateUIState = useCallback(() => {
+    const now = performance.now()
+    const timeSinceLastUpdate = now - lastUiUpdateTimeRef.current
+
+    // Only update UI if enough time has passed (throttle to uiUpdateInterval)
+    if (timeSinceLastUpdate < uiUpdateInterval) {
+      // Schedule next check
+      rafRef.current = requestAnimationFrame(updateUIState)
+      return
+    }
+
+    // Check if we have buffered GPS data to process
+    if (gpsBufferRef.current) {
+      const buffered = gpsBufferRef.current
+      lastUiUpdateTimeRef.current = now
+
+      // Update UI state (triggers re-render)
+      setPosition({ lat: buffered.lat, lng: buffered.lng })
+      if (buffered.heading !== null) {
+        setHeading(buffered.heading)
+      }
+
+      // Clear buffer (processed)
+      gpsBufferRef.current = null
+    }
+
+    // Continue animation loop if tracking is enabled
+    if (enabled && driverId) {
+      rafRef.current = requestAnimationFrame(updateUIState)
+    }
+  }, [enabled, driverId, uiUpdateInterval])
+
+  // Start/stop UI update loop
+  useEffect(() => {
+    if (enabled && driverId) {
+      setIsTracking(true)
+      lastUiUpdateTimeRef.current = performance.now()
+      rafRef.current = requestAnimationFrame(updateUIState)
+    } else {
+      setIsTracking(false)
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+      // Clear UI state when disabled
+      setPosition(null)
+      setHeading(null)
+      gpsBufferRef.current = null
+    }
+
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+    }
+  }, [enabled, driverId, updateUIState])
 
   useEffect(() => {
     if (!enabled || !driverId) {
@@ -241,11 +357,20 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
 
     const updateLocation = async (position: GeolocationPosition) => {
       const now = Date.now()
+      const { latitude, longitude, heading } = position.coords
       
+      // UI THROTTLING: Buffer GPS ping for UI update (processed at 500ms-1s rate)
+      // This allows smooth UI updates even though GPS pings arrive at ~4s intervals
+      gpsBufferRef.current = {
+        lat: latitude,
+        lng: longitude,
+        heading: heading || null,
+        timestamp: now
+      }
+
       // Throttle updates to prevent excessive API calls (for geocoding)
       if (lastPositionRef.current && (now - lastDbWriteTimeRef.current < minUpdateInterval)) {
-        // Still update local state (for map) but skip geocoding/DB write
-        const { latitude, longitude } = position.coords
+        // Still buffer for UI, but skip geocoding/DB write
         const distance = calculateDistance(
           lastPositionRef.current.lat,
           lastPositionRef.current.lng,
@@ -254,12 +379,10 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
         )
         if (distance >= minDistanceMeters) {
           lastPositionRef.current = { lat: latitude, lng: longitude }
-          // Map will update via realtime subscription, no need to force DB write
+          // UI will update via throttled updateUIState, DB write skipped
         }
         return
       }
-      
-      const { latitude, longitude, heading } = position.coords
       
       // Check if driver actually moved significantly (10m threshold)
       if (lastPositionRef.current) {
@@ -351,4 +474,10 @@ export function useGeolocation({ enabled, driverId, updateInterval = 4000 }: Use
       pendingUpdateRef.current = false
     }
   }, [enabled, driverId, supabase, minUpdateInterval])
+
+  return {
+    position,
+    heading,
+    isTracking,
+  }
 }

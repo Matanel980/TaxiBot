@@ -3,6 +3,7 @@
 import { useEffect, useRef, useMemo, useCallback, useState } from 'react'
 import { GoogleMap, Marker, InfoWindow, Circle, useJsApiLoader } from '@react-google-maps/api'
 import { darkMapStyle, ISRAEL_CENTER, calculateDistance, GOOGLE_MAPS_LOADER_OPTIONS, getAddressFromCoords, createTaxiIcon } from '@/lib/google-maps-loader'
+import { useMarkerInterpolation } from '@/lib/utils/marker-interpolation'
 import { Button } from '@/components/ui/button'
 import { MapPin, Maximize2, Minimize2, Navigation2, X, Search, MapPin as MapPinIcon } from 'lucide-react'
 import { Card } from '@/components/ui/card'
@@ -38,13 +39,27 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
   const prevPositionRef = useRef<{ lat: number; lng: number } | null>(null)
   const isInitialMountRef = useRef(true)
 
+  // SMOOTH INTERPOLATION: Use shared interpolation utility for smooth marker movement
+  // This prevents marker "jumps" and provides smooth 60fps animation
+  const { position: interpolatedPosition, heading: interpolatedHeading } = useMarkerInterpolation(
+    userPosition ? { lat: userPosition.lat, lng: userPosition.lng } : null,
+    heading ?? null,
+    {
+      duration: 2000, // 2 seconds glide
+      minDistanceMeters: 5, // Skip interpolation for tiny movements (< 5m)
+      maxDistanceMeters: 200, // Jump instantly for large movements (> 200m) to avoid "supersonic" movement
+      enabled: true,
+    }
+  )
+
   // Memoize map center and zoom
+  // Uses interpolated position for smooth initial centering
   const mapCenter = useMemo(() => {
-    if (userPosition) {
-      return { lat: userPosition.lat, lng: userPosition.lng }
+    if (interpolatedPosition) {
+      return { lat: interpolatedPosition.lat, lng: interpolatedPosition.lng }
     }
     return ISRAEL_CENTER
-  }, [userPosition])
+  }, [interpolatedPosition])
 
   // Memoize map options to prevent unnecessary re-renders
   const mapOptions = useMemo<google.maps.MapOptions>(() => ({
@@ -151,28 +166,28 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
 
   // Mark current location
   const markCurrentLocation = useCallback(async () => {
-    if (!userPosition || !mapRef.current || markingLocation) return
+    if (!interpolatedPosition || !mapRef.current || markingLocation) return
 
     setMarkingLocation(true)
     try {
       // Get address for current location
-      const address = await getAddressFromCoords(userPosition.lat, userPosition.lng)
+      const address = await getAddressFromCoords(interpolatedPosition.lat, interpolatedPosition.lng)
       
       // Center map on current position
-      mapRef.current.setCenter({ lat: userPosition.lat, lng: userPosition.lng })
+      mapRef.current.setCenter({ lat: interpolatedPosition.lat, lng: interpolatedPosition.lng })
       mapRef.current.setZoom(17)
 
       // Show marker with address
       setClickedPosition({
-        lat: userPosition.lat,
-        lng: userPosition.lng,
+        lat: interpolatedPosition.lat,
+        lng: interpolatedPosition.lng,
         address: address || 'מיקום נוכחי'
       })
 
       // Notify parent component
       onLocationMarked?.({
-        lat: userPosition.lat,
-        lng: userPosition.lng,
+        lat: interpolatedPosition.lat,
+        lng: interpolatedPosition.lng,
         address: address || undefined
       })
     } catch (error) {
@@ -180,16 +195,16 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
     } finally {
       setMarkingLocation(false)
     }
-  }, [userPosition, onLocationMarked, markingLocation])
+  }, [interpolatedPosition, onLocationMarked, markingLocation])
 
   // Focus on driver's current position
   const focusOnSelf = useCallback(() => {
-    if (!mapRef.current || !userPosition) return
+    if (!mapRef.current || !interpolatedPosition) return
     
-    mapRef.current.setCenter({ lat: userPosition.lat, lng: userPosition.lng })
+    mapRef.current.setCenter({ lat: interpolatedPosition.lat, lng: interpolatedPosition.lng })
     mapRef.current.setZoom(17)
     setClickedPosition(null) // Close any open info window
-  }, [userPosition])
+  }, [interpolatedPosition])
 
   // Click outside to close search suggestions
   useEffect(() => {
@@ -208,17 +223,18 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
     setMapSize(prev => prev === 'normal' ? 'fullscreen' : 'normal')
   }, [])
 
-  // Update map center when user position changes
+  // Update map center when interpolated position changes
+  // Uses interpolated position for smooth map following
   useEffect(() => {
-    if (!isLoaded || !mapRef.current || !userPosition) return
+    if (!isLoaded || !mapRef.current || !interpolatedPosition) return
 
     // Check if position changed significantly (>100m)
     if (prevPositionRef.current && !isInitialMountRef.current) {
       const distance = calculateDistance(
         prevPositionRef.current.lat,
         prevPositionRef.current.lng,
-        userPosition.lat,
-        userPosition.lng
+        interpolatedPosition.lat,
+        interpolatedPosition.lng
       )
 
       // Only update if moved more than 100 meters
@@ -236,20 +252,20 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
         const distance = calculateDistance(
           currentLat,
           currentLng,
-          userPosition.lat,
-          userPosition.lng
+          interpolatedPosition.lat,
+          interpolatedPosition.lng
         )
         
         // Only pan if moved more than 50 meters
         if (distance > 50 || isInitialMountRef.current) {
-          mapRef.current.panTo({ lat: userPosition.lat, lng: userPosition.lng })
+          mapRef.current.panTo({ lat: interpolatedPosition.lat, lng: interpolatedPosition.lng })
           mapRef.current.setZoom(17) // Ensure street-level zoom
         }
       } else {
-        mapRef.current.setCenter({ lat: userPosition.lat, lng: userPosition.lng })
+        mapRef.current.setCenter({ lat: interpolatedPosition.lat, lng: interpolatedPosition.lng })
         mapRef.current.setZoom(17)
       }
-      prevPositionRef.current = userPosition
+      prevPositionRef.current = { lat: interpolatedPosition.lat, lng: interpolatedPosition.lng }
     }
 
     // Mark initial mount as complete
@@ -258,27 +274,28 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
         isInitialMountRef.current = false
       }, 1000)
     }
-  }, [userPosition, isLoaded])
+  }, [interpolatedPosition, isLoaded])
 
   const onLoad = useCallback((map: google.maps.Map) => {
     mapRef.current = map
-    // Set initial position if available
-    if (userPosition) {
-      map.setCenter({ lat: userPosition.lat, lng: userPosition.lng })
+    // Set initial position if available (use interpolated position)
+    if (interpolatedPosition) {
+      map.setCenter({ lat: interpolatedPosition.lat, lng: interpolatedPosition.lng })
       map.setZoom(17)
     }
-  }, [userPosition])
+  }, [interpolatedPosition])
 
   const onUnmount = useCallback(() => {
     mapRef.current = null
   }, [])
 
   // Create custom driver marker icon with heading indicator
+  // Uses interpolated heading for smooth rotation
   const driverIcon = useMemo<google.maps.Icon | undefined>(() => {
-    if (!userPosition || typeof window === 'undefined' || !window.google) return undefined
+    if (!interpolatedPosition || typeof window === 'undefined' || !window.google) return undefined
     
-    // Use createTaxiIcon from google-maps-loader for heading support
-    const headingValue = heading ?? 0 // Default to 0 if heading not available
+    // Use interpolated heading for smooth rotation (handles 0-360 wrap-around)
+    const headingValue = interpolatedHeading ?? 0 // Default to 0 if heading not available
     
     try {
       return createTaxiIcon('available', window.google, headingValue)
@@ -299,7 +316,7 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
         anchor: new window.google.maps.Point(16, 16),
       }
     }
-  }, [userPosition, heading])
+  }, [interpolatedPosition, interpolatedHeading])
 
   if (!isLoaded) {
     return (
@@ -373,7 +390,7 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
       {/* Control buttons overlay - Position below profile card */}
       <div className="absolute top-20 right-4 z-[1000] flex flex-col gap-2 pointer-events-auto">
         {/* Mark current location button */}
-        {userPosition && (
+        {interpolatedPosition && (
           <Button
             variant="outline"
             size="sm"
@@ -391,7 +408,7 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
         )}
 
         {/* Focus on self button */}
-        {userPosition && (
+        {interpolatedPosition && (
           <Button
             variant="outline"
             size="sm"
@@ -427,15 +444,17 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
         onClick={handleMapClick}
       >
         {/* Driver's current position marker with GPS accuracy circle */}
-        {userPosition && driverIcon && (
+        {/* Uses interpolated position for smooth movement (60fps) */}
+        {interpolatedPosition && driverIcon && (
           <>
             <Marker
-              position={{ lat: userPosition.lat, lng: userPosition.lng }}
+              position={{ lat: interpolatedPosition.lat, lng: interpolatedPosition.lng }}
               icon={driverIcon}
               title="המיקום שלך"
               onClick={focusOnSelf}
             />
             {/* GPS Accuracy Circle - Visual indicator of location precision */}
+            {/* Uses interpolated position for smooth circle movement */}
             {(() => {
               // Default accuracy: ~10 meters (typical GPS accuracy)
               const accuracyMeters = 10
@@ -443,7 +462,7 @@ export function DriverMapClient({ userPosition, heading, onLocationMarked, onAdd
               
               return (
                 <Circle
-                  center={{ lat: userPosition.lat, lng: userPosition.lng }}
+                  center={{ lat: interpolatedPosition.lat, lng: interpolatedPosition.lng }}
                   radius={accuracyMeters}
                   options={{
                     fillColor: '#3B82F6',

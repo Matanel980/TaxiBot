@@ -94,6 +94,31 @@ export interface ZoneGeoJSON {
   }
 }
 
+// PostGIS Function Response Types (for n8n integration)
+export interface NearestDriver {
+  id: string
+  full_name: string
+  phone: string
+  latitude: number
+  longitude: number
+  distance_meters: number
+  distance_km: number
+  station_id: string | null
+  vehicle_number: string | null
+  car_type: string | null
+}
+
+export interface FindNearestDriversResponse {
+  success: boolean
+  station_id: string | null
+  pickup_location: {
+    latitude: number
+    longitude: number
+  }
+  drivers: NearestDriver[]
+  driver_count: number
+}
+
 // Browser client (for use in Client Components)
 export function createClient() {
   return createBrowserClient(

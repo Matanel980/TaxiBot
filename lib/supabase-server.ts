@@ -33,17 +33,7 @@ export async function createServerSupabaseClient() {
 
 // Admin client (for use in API Routes only - bypasses RLS and email confirmation)
 export function createSupabaseAdminClient() {
-  // Debug: Check if key exists
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-  const keyExists = !!serviceRoleKey
-  const keyLength = serviceRoleKey?.length || 0
-  const keyPreview = serviceRoleKey ? `${serviceRoleKey.substring(0, 10)}...` : 'undefined'
-  
-  console.log('[DEBUG] Supabase Admin Client Initialization:')
-  console.log('  - SUPABASE_SERVICE_ROLE_KEY exists:', keyExists)
-  console.log('  - Key length:', keyLength)
-  console.log('  - Key preview:', keyPreview)
-  console.log('  - All env vars with SUPABASE:', Object.keys(process.env).filter(k => k.includes('SUPABASE')))
   
   if (!serviceRoleKey) {
     throw new Error('SUPABASE_SERVICE_ROLE_KEY is not configured. Please add it to .env.local')

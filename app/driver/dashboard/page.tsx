@@ -11,6 +11,7 @@ import { useRealtimeQueue } from '@/lib/hooks/useRealtimeQueue'
 import { useRealtimeTrips } from '@/lib/hooks/useRealtimeTrips'
 import { usePushNotifications } from '@/lib/hooks/usePushNotifications'
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus'
+import { useProgressiveData } from '@/lib/hooks/useProgressiveData'
 import { SwipeToGoOnline } from '@/components/driver/SwipeToGoOnline'
 import { QueueCard } from '@/components/driver/QueueCard'
 import { TripOverlay } from '@/components/driver/TripOverlay'
@@ -18,6 +19,8 @@ import { ActiveTripView } from '@/components/driver/ActiveTripView'
 import { DriverMap } from '@/components/driver/DriverMap'
 import { OnboardingFlow } from '@/components/driver/OnboardingFlow'
 import { PushNotificationPrompt } from '@/components/driver/PushNotificationPrompt'
+import { CollapsibleDashboardSheet } from '@/components/driver/CollapsibleDashboardSheet'
+import { DashboardSummary } from '@/components/driver/DashboardSummary'
 import { Card, CardContent } from '@/components/ui/card'
 import { MapPin, Navigation, ChevronDown } from 'lucide-react'
 import type { Profile, Trip } from '@/lib/supabase'
@@ -28,7 +31,6 @@ export default function DriverDashboard() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [isOnline, setIsOnline] = useState<boolean>(false)
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null)
-  const [loading, setLoading] = useState(true)
   const [toggling, setToggling] = useState(false)
   const isTogglingRef = useRef(false) // Use ref instead of state to avoid re-renders and subscription re-runs
   const toggleTimeoutRef = useRef<NodeJS.Timeout | null>(null) // Track timeout to prevent stuck states
@@ -39,6 +41,57 @@ export default function DriverDashboard() {
   
   const supabase = createClient()
   const router = useRouter()
+
+  // PROGRESSIVE DATA LOADING: Critical data loads first (~100ms), secondary data loads in background
+  const {
+    criticalData,
+    fullProfile,
+    activeTrip: progressiveActiveTrip,
+    criticalLoading,
+    secondaryLoading,
+    error: progressiveError,
+  } = useProgressiveData({
+    onCriticalDataLoaded: (critical) => {
+      // Map critical data to profile state for immediate UI render
+      if (critical.id) {
+        setProfile({
+          id: critical.id,
+          full_name: critical.full_name || '',
+          is_online: critical.is_online,
+          role: critical.role || 'driver',
+          latitude: critical.latitude,
+          longitude: critical.longitude,
+        } as Profile)
+        setIsOnline(!!critical.is_online)
+      }
+    },
+    onSecondaryDataLoaded: (fullProfile) => {
+      // Update with full profile data
+      setProfile(fullProfile)
+      setIsOnline(!!fullProfile.is_online)
+      
+      // Check if onboarding is needed (incomplete profile)
+      if (!fullProfile.full_name || !fullProfile.vehicle_number || !fullProfile.car_type) {
+        setShowOnboarding(true)
+      }
+    },
+    onActiveTripLoaded: (trip) => {
+      setActiveTrip(trip)
+    },
+    onError: (error) => {
+      console.error('[Driver Dashboard] Progressive data error:', error)
+    },
+  })
+
+  // Sync active trip from progressive data
+  useEffect(() => {
+    if (progressiveActiveTrip !== undefined) {
+      setActiveTrip(progressiveActiveTrip)
+    }
+  }, [progressiveActiveTrip])
+
+  // Determine loading state: show loading only if critical data hasn't loaded yet
+  const loading = criticalLoading
 
   const { queuePosition, totalInQueue } = useRealtimeQueue({
     zoneId: profile?.current_zone || null,
@@ -58,57 +111,22 @@ export default function DriverDashboard() {
   // Network status monitoring
   const { isOnline: networkOnline, wasOffline } = useNetworkStatus()
 
-  // Track user position for map
-  useEffect(() => {
-    if (typeof window === 'undefined' || !navigator.geolocation) {
-      console.warn('[Driver Dashboard] Geolocation API not available')
-      return
-    }
-
-    const watchId = navigator.geolocation.watchPosition(
-      (position) => {
-        setUserPosition({
-          lat: position.coords.latitude,
-          lng: position.coords.longitude
-        })
-      },
-      (error) => {
-        // Provide detailed error information
-        const errorMessages: Record<number, string> = {
-          1: 'PERMISSION_DENIED - User denied the request for geolocation',
-          2: 'POSITION_UNAVAILABLE - Location information is unavailable',
-          3: 'TIMEOUT - The request to get user location timed out'
-        }
-        const errorMessage = errorMessages[error.code] || `Unknown error (code: ${error.code})`
-        
-        console.warn('[Driver Dashboard] Geolocation error:', {
-          code: error.code,
-          message: errorMessage,
-          details: error.message || 'No additional details',
-        })
-        
-        // Don't treat this as a critical error - location tracking is handled by useGeolocation hook
-      },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 30000, // Accept cached position up to 30 seconds old
-        timeout: 10000 // 10 second timeout
-      }
-    )
-
-    return () => {
-      if (watchId !== null) {
-        navigator.geolocation.clearWatch(watchId)
-      }
-    }
-  }, [])
-
   // Location broadcasting - automatically starts/stops based on isOnline
-  useGeolocation({
+  // Returns throttled position/heading for smooth UI updates (500ms-1s rate)
+  const { position: geolocationPosition, heading: geolocationHeading } = useGeolocation({
     enabled: isOnline, // Stable boolean dependency
     driverId: profile?.id || '',
-    updateInterval: 4000
+    updateInterval: 4000,
+    uiUpdateInterval: 500 // 500ms = 2 updates/second for smooth rendering
   })
+
+  // Use throttled position from useGeolocation hook (removes duplicate watcher)
+  // This position updates at 500ms-1s rate for smooth UI, while DB writes happen at 5s rate
+  useEffect(() => {
+    if (geolocationPosition) {
+      setUserPosition(geolocationPosition)
+    }
+  }, [geolocationPosition])
 
   // Presence heartbeat - track when driver is actually active in the app
   useEffect(() => {
@@ -148,161 +166,21 @@ export default function DriverDashboard() {
     }
   }, [profile?.id, isOnline, supabase])
 
+  // Separate effect for real-time subscription - only runs after critical data is loaded
   useEffect(() => {
-    const isMountedRef = { current: true }
-    let initialDataLoaded = false // Flag to prevent subscription processing until initial data is loaded
-
-    const fetchProfile = async () => {
-      const { data: { user } } = await supabase.auth.getUser()
-      
-      if (!isMountedRef.current) return // Guard check
-      
-      if (user) {
-        const { data, error: profileError } = await supabase
-          .from('profiles')
-          .select('id, phone, role, full_name, vehicle_number, car_type, current_zone, is_online, is_approved, latitude, longitude, current_address, heading, updated_at, station_id')
-          .eq('id', user.id)
-          .single()
-
-        if (!isMountedRef.current) return // Guard check after async
-
-        if (profileError) {
-          console.error('[Driver Dashboard] Profile fetch error:', profileError)
-          if (profileError.code === 'PGRST116' || profileError.message?.includes('406')) {
-            console.error('[Driver Dashboard] 406 Error - Possible RLS or schema issue')
-          }
-        }
-
-        if (data) {
-          const prof = data as Profile
-          if (isMountedRef.current) {
-            setProfile(prof)
-            setIsOnline(!!prof.is_online)
-            
-            // Check if onboarding is needed (incomplete profile)
-            if (!prof.full_name || !prof.vehicle_number || !prof.car_type) {
-              setShowOnboarding(true)
-            }
-          }
-
-          // Check for active trip - wrapped in try-catch to prevent UI crash
-          // Get driver's station_id for filtering
-          const driverStationId = prof.station_id
-          
-          try {
-          // STATION-AWARE: Filter trips by driver_id AND station_id (defense-in-depth)
-          const { data: trip, error: tripError } = await supabase
-            .from('trips')
-            .select('id, customer_phone, pickup_address, destination_address, status, driver_id, created_at, updated_at, station_id')
-            .eq('driver_id', user.id)
-            .eq('status', 'active')
-            .eq('station_id', driverStationId || '') // STATION FILTER (if station_id exists)
-            .maybeSingle() // Use maybeSingle instead of single to handle no rows gracefully
-
-          if (!isMountedRef.current) return // Guard check after async
-
-          if (tripError) {
-            // Handle 406 errors specifically
-            if (tripError.code === 'PGRST116') {
-              // No active trip found - this is normal, not an error
-              if (isMountedRef.current) {
-                setActiveTrip(null)
-              }
-            } else if (tripError.message?.includes('406') || tripError.message?.includes('Not Acceptable')) {
-              console.error('[Driver Dashboard] 406 Error on trip fetch - Possible RLS or schema issue')
-              // Try fallback with minimal columns (still station-aware)
-              const { data: fallbackTrip } = await supabase
-                .from('trips')
-                .select('id, status, driver_id')
-                .eq('driver_id', user.id)
-                .eq('status', 'active')
-                .eq('station_id', driverStationId || '') // STATION FILTER
-                .maybeSingle()
-              
-              if (!isMountedRef.current) return // Guard check
-              
-              if (fallbackTrip) {
-                // Map fallback to full Trip type
-                if (isMountedRef.current) {
-                  setActiveTrip({
-                    ...fallbackTrip,
-                    customer_phone: '',
-                    pickup_address: '',
-                    destination_address: '',
-                    created_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString()
-                  } as Trip)
-                }
-              } else {
-                if (isMountedRef.current) {
-                  setActiveTrip(null)
-                }
-              }
-            } else {
-              console.error('[Driver Dashboard] Trip fetch error:', tripError)
-              if (isMountedRef.current) {
-                setActiveTrip(null)
-              }
-            }
-          } else if (trip) {
-            if (isMountedRef.current) {
-              setActiveTrip(trip as Trip)
-            }
-          } else {
-            if (isMountedRef.current) {
-              setActiveTrip(null)
-            }
-          }
-          } catch (err) {
-            console.error('[Driver Dashboard] Unexpected error fetching trip:', err)
-            if (isMountedRef.current) {
-              setActiveTrip(null)
-            }
-            // Don't block UI rendering - continue even if trip fetch fails
-          }
-        }
-      }
-      
-      // CRITICAL: Always set loading to false, even if there were errors
-      if (isMountedRef.current) {
-        setLoading(false)
-        initialDataLoaded = true // Mark initial data as loaded
-      }
-    }
-
-    // CRITICAL: Sequential initialization - fetch profile first
-    fetchProfile()
-
-    return () => {
-      isMountedRef.current = false
-      // Cleanup: Clear any pending toggle timeouts on unmount
-      if (toggleTimeoutRef.current) {
-        clearTimeout(toggleTimeoutRef.current)
-        toggleTimeoutRef.current = null
-      }
-      // Abort any in-flight toggle requests on unmount
-      if (toggleAbortControllerRef.current) {
-        toggleAbortControllerRef.current.abort()
-        toggleAbortControllerRef.current = null
-      }
-    }
-  }, [supabase])
-
-  // Separate effect for real-time subscription - only runs after profile is loaded
-  useEffect(() => {
-    if (!profile?.id) return // Don't subscribe if profile not loaded yet
+    if (!criticalData?.id) return // Don't subscribe if critical data not loaded yet
     
     const isMountedRef = { current: true }
     
     const channel = supabase
-      .channel(`profile-updates-${profile.id}`)
+      .channel(`profile-updates-${criticalData.id}`)
       .on(
         'postgres_changes',
         {
           event: 'UPDATE',
           schema: 'public',
           table: 'profiles',
-          filter: `id=eq.${profile.id}`
+          filter: `id=eq.${criticalData.id}`
         },
         (payload) => {
           if (!isMountedRef.current) return // Guard check
@@ -321,26 +199,35 @@ export default function DriverDashboard() {
           }
         }
       )
-      .subscribe((status) => {
+      .subscribe((status, err) => {
         console.log('[Driver Dashboard] Profile subscription status:', status)
         if (status === 'SUBSCRIBED') {
           console.log('✅ Successfully subscribed to profile updates')
         } else if (status === 'CHANNEL_ERROR') {
           console.error('❌ Error subscribing to profile updates')
+          if (err) {
+            console.error('   Error details:', err)
+          }
+          console.error('   Troubleshooting:')
+          console.error('   1. Check if profiles table is in Realtime publication')
+          console.error('   2. Verify REPLICA IDENTITY is FULL: ALTER TABLE profiles REPLICA IDENTITY FULL;')
+          console.error('   3. Ensure RLS policy allows SELECT: USING (auth.uid() = id)')
+          console.error('   4. Run fix script: scripts/fix-driver-profile-realtime.sql')
         } else if (status === 'TIMED_OUT') {
           console.warn('⚠️ Profile subscription timed out')
+          console.warn('   This may indicate network issues or Realtime service unavailable')
         }
       })
 
     // CRITICAL: Handle background tab recovery - resubscribe when tab regains focus
     const handleVisibilityChange = () => {
-      if (!document.hidden && isMountedRef.current && profile?.id) {
+      if (!document.hidden && isMountedRef.current && criticalData?.id) {
         console.log('[Driver Dashboard] Tab regained focus - refreshing subscription')
         // Refetch profile to ensure freshness
         supabase
           .from('profiles')
           .select('*')
-          .eq('id', profile.id)
+          .eq('id', criticalData.id)
           .single()
           .then(({ data }) => {
             if (data && isMountedRef.current) {
@@ -358,7 +245,23 @@ export default function DriverDashboard() {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       supabase.removeChannel(channel)
     }
-  }, [supabase, profile?.id]) // Remove isTogglingRef from deps - it's a ref, not state (prevents unnecessary re-subscriptions)
+  }, [supabase, criticalData?.id]) // Use criticalData.id instead of profile?.id for earlier subscription
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      // Cleanup: Clear any pending toggle timeouts on unmount
+      if (toggleTimeoutRef.current) {
+        clearTimeout(toggleTimeoutRef.current)
+        toggleTimeoutRef.current = null
+      }
+      // Abort any in-flight toggle requests on unmount
+      if (toggleAbortControllerRef.current) {
+        toggleAbortControllerRef.current.abort()
+        toggleAbortControllerRef.current = null
+      }
+    }
+  }, [])
 
   const handleToggleOnline = async (checked: boolean) => {
     if (!profile) return
@@ -656,6 +559,8 @@ export default function DriverDashboard() {
     }
   }
 
+  // Show loading only if critical data hasn't loaded yet
+  // Once critical data is available, show map immediately (even if secondary data is still loading)
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-900 p-4">
@@ -667,6 +572,18 @@ export default function DriverDashboard() {
             <div className="h-16 bg-gray-800 rounded-xl animate-pulse" />
             <div className="h-16 bg-gray-800 rounded-xl animate-pulse" />
           </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Show error state if critical data failed to load
+  if (progressiveError && !criticalData) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-900 p-4">
+        <div className="text-center">
+          <p className="text-red-400 mb-4">שגיאה בטעינת הנתונים</p>
+          <p className="text-gray-400 text-sm">{progressiveError.message}</p>
         </div>
       </div>
     )
@@ -686,7 +603,10 @@ export default function DriverDashboard() {
           />
         )}
         <div className="fixed inset-0 z-0">
-          <DriverMap userPosition={userPosition} heading={profile?.heading ?? null} />
+          <DriverMap 
+            userPosition={userPosition} 
+            heading={geolocationHeading ?? profile?.heading ?? null} 
+          />
         </div>
         <div className="relative z-10 p-3 sm:p-4 space-y-3 sm:space-y-4 overflow-y-auto min-h-screen pb-20 safe-bottom">
           <div className="bg-white/90 dark:bg-slate-800/90 backdrop-blur-lg rounded-xl sm:rounded-lg border border-white/20 shadow-lg">
@@ -710,22 +630,45 @@ export default function DriverDashboard() {
         />
       )}
       {/* Map Background - Fixed on mobile */}
-      <div className="fixed inset-0 z-0">
-        <DriverMap userPosition={userPosition} heading={profile?.heading ?? null} />
-      </div>
+      {/* PROGRESSIVE RENDERING: Map shows immediately with critical data (latitude/longitude) */}
+      {/* LAYOUT ANIMATION: Map smoothly resizes when sheet expands/collapses */}
+      <motion.div 
+        className="fixed inset-0 z-0"
+        layout
+        transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+      >
+        <DriverMap 
+          userPosition={userPosition} 
+          heading={geolocationHeading ?? profile?.heading ?? null} 
+        />
+      </motion.div>
       
-      {/* Content Overlay - Mobile First */}
-      <div className="relative z-10 p-3 sm:p-4 space-y-3 sm:space-y-4 overflow-y-auto min-h-screen pb-20 safe-bottom">
+      {/* Collapsible Dashboard Sheet - Mobile Only */}
+      {/* On desktop, renders normally without bottom sheet */}
+      <CollapsibleDashboardSheet
+        defaultExpanded={true}
+        summaryContent={
+          <DashboardSummary
+            profile={profile}
+            isOnline={isOnline}
+            activeTrip={activeTrip}
+            queuePosition={queuePosition}
+            totalInQueue={totalInQueue}
+          />
+        }
+      >
         {/* Push Notification Prompt - Show when online and permission not granted */}
         {profile && isOnline && pushNotifications.permission !== 'granted' && (
           <PushNotificationPrompt driverId={profile.id} />
         )}
 
         {/* Top Bar - Clickable Profile Card Header */}
+        {/* PROGRESSIVE RENDERING: Shows with critical data (full_name), enhanced when secondary data loads */}
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
           className="glass-card-dark rounded-xl sm:rounded-2xl overflow-hidden"
+          layout
         >
           <button
             onClick={() => setProfileCardOpen(!profileCardOpen)}
@@ -733,7 +676,7 @@ export default function DriverDashboard() {
           >
             <div className="flex-1 min-w-0 text-right">
               <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-white truncate">
-                שלום, {profile?.full_name}
+                שלום, {profile?.full_name || criticalData?.full_name || 'נהג'}
               </h1>
               <p className="text-xs sm:text-sm text-gray-400 flex items-center gap-1 mt-1 justify-end">
                 <Navigation size={12} className="sm:w-3.5 sm:h-3.5" />
@@ -761,47 +704,54 @@ export default function DriverDashboard() {
           >
             <div className="px-3 sm:px-4 pb-4 sm:pb-6 pt-2">
               {/* Swipe to Go Online - Centered and Mobile-Friendly */}
+              {/* PROGRESSIVE RENDERING: Works with critical data (is_online), full profile loads in background */}
               <SwipeToGoOnline
                 isOnline={isOnline}
                 onToggle={handleToggleOnline}
                 loading={toggling}
-                driverName={profile?.full_name}
+                driverName={profile?.full_name || criticalData?.full_name || ''}
               />
             </div>
           </motion.div>
         </motion.div>
 
         {/* Queue Card - Responsive */}
+        {/* PROGRESSIVE RENDERING: Only shows when secondary data (current_zone) is loaded */}
         {profile?.is_online && profile?.current_zone && (
-          <div className="glass-card-dark rounded-xl sm:rounded-2xl">
+          <motion.div 
+            className="glass-card-dark rounded-xl sm:rounded-2xl"
+            layout
+          >
             <QueueCard position={queuePosition} totalInQueue={totalInQueue} />
-          </div>
+          </motion.div>
         )}
 
         {/* Zone Info - Compact on Mobile */}
+        {/* PROGRESSIVE RENDERING: Only shows when secondary data (current_zone) is loaded */}
         {profile?.current_zone && (
-          <Card className="glass-card-dark rounded-xl sm:rounded-2xl">
-            <CardContent className="p-3 sm:p-4">
-              <div className="flex items-center gap-2">
-                <MapPin className="text-taxi-yellow flex-shrink-0" size={18} />
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs sm:text-sm text-gray-400">אזור נוכחי</p>
-                  <p className="font-semibold text-white text-sm sm:text-base truncate">מרכז העיר</p>
+          <motion.div layout>
+            <Card className="glass-card-dark rounded-xl sm:rounded-2xl">
+              <CardContent className="p-3 sm:p-4">
+                <div className="flex items-center gap-2">
+                  <MapPin className="text-taxi-yellow flex-shrink-0" size={18} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs sm:text-sm text-gray-400">אזור נוכחי</p>
+                    <p className="font-semibold text-white text-sm sm:text-base truncate">מרכז העיר</p>
+                  </div>
                 </div>
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          </motion.div>
         )}
 
-        {/* Trip Overlay */}
+        {/* Trip Overlay - Always on top */}
         <TripOverlay
           trip={pendingTrip}
           onAccept={handleAcceptTrip}
           onDismiss={clearPendingTrip}
-          currentDriverId={profile?.id || null}
+          currentDriverId={profile?.id || criticalData?.id || null}
         />
-      </div>
+      </CollapsibleDashboardSheet>
     </div>
   )
 }
-
