@@ -114,70 +114,69 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // CRITICAL: Refresh session first to ensure tokens are up-to-date
+  // CRITICAL: Use getUser() for reliable authentication (more secure, forces refresh)
+  // getUser() is more secure than getSession() and forces a refresh if cookie is valid but session is stale
   // This call will trigger cookie updates if tokens need refreshing
-  // We use getSession() which automatically refreshes expired tokens
-  const { data: { session }, error: sessionError } = await supabase.auth.getSession()
-  
-  // PRODUCTION DEBUG: Log session state in production
-  const isProduction = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production'
-  if (isProduction) {
-    const cookiesAfterGetSession = response.cookies.getAll()
-    const authCookiesAfterGetSession = cookiesAfterGetSession.filter(c => 
-      c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
-    )
-    console.error(`[Middleware Production] After getSession() - Has session: ${!!session}, Auth cookies in response: ${authCookiesAfterGetSession.length}`)
-  }
-  
-  if (sessionError) {
-    console.error(`[Middleware] Error getting session:`, {
-      message: sessionError.message,
-      status: sessionError.status
-    })
-    
-    // PRODUCTION DEBUG: Log cookie state when session error occurs
-    if (isProduction) {
-      const allCookies = request.cookies.getAll()
-      const authCookies = allCookies.filter(c => 
-        c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
-      )
-      console.error(`[Middleware Production] Session error - Incoming auth cookies: ${authCookies.length}, Cookie names: ${authCookies.map(c => c.name.substring(0, 30)).join(', ')}`)
-    }
-    
-    // GRACEFUL FAIL: If session refresh fails, clear cookies and redirect to login
-    // This prevents hanging on blank screens
-    if (sessionError.status === 401 || sessionError.message?.includes('JWT') || sessionError.message?.includes('session')) {
-      console.warn(`[Middleware] ⚠️ Session invalid - clearing cookies and redirecting to login`)
-      
-      // Clear all auth cookies
-      const allCookies = request.cookies.getAll()
-      const authCookies = allCookies.filter(c => 
-        c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
-      )
-      
-      const clearResponse = NextResponse.redirect(new URL('/login', request.url))
-      authCookies.forEach((cookie) => {
-        clearResponse.cookies.delete(cookie.name)
-      })
-      
-      return clearResponse
-    }
-  }
-  
-
-  // Use getUser() for reliable authentication (more reliable than getSession)
-  // This call may trigger additional cookie updates (token refresh, etc.)
   const { data: { user }, error: userError } = await supabase.auth.getUser()
   
   const { pathname } = request.nextUrl
+  const isProduction = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production'
   
-  // PRODUCTION DEBUG: Log user state in production
+  // PRODUCTION FIX: After getUser(), check if cookies were written to response
+  // If not, manually extract and set them from the Supabase client
+  const cookiesAfterGetUser = response.cookies.getAll()
+  const authCookiesAfterGetUser = cookiesAfterGetUser.filter(c => 
+    c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
+  )
+  
+  // PRODUCTION DEBUG: Log cookie state
   if (isProduction) {
-    const cookiesAfterGetUser = response.cookies.getAll()
-    const authCookiesAfterGetUser = cookiesAfterGetUser.filter(c => 
+    console.error(`[Middleware Production] After getUser() - Has user: ${!!user}, Auth cookies in response: ${authCookiesAfterGetUser.length}`)
+  }
+  
+  // CRITICAL FIX: If user exists but no cookies in response, manually extract from request and set them
+  // This handles the case where Supabase's setAll() was called but cookies didn't make it to response
+  if (user && authCookiesAfterGetUser.length === 0) {
+    // Check if we have cookies in the request (user is authenticated but cookies weren't written to response)
+    const incomingAuthCookies = filteredCookies.filter(c => 
       c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
     )
-    console.error(`[Middleware Production] After getUser() - Has user: ${!!user}, Auth cookies in response: ${authCookiesAfterGetUser.length}`)
+    
+    if (incomingAuthCookies.length > 0) {
+      // PRODUCTION FIX: Manually re-attach cookies to response
+      // This ensures cookies persist even if setAll() didn't work correctly
+      if (isProduction) {
+        console.error(`[Middleware Production] ⚠️ User authenticated but no cookies in response. Re-attaching ${incomingAuthCookies.length} cookie(s)`)
+      }
+      
+      incomingAuthCookies.forEach((cookie) => {
+        const isAuthCookie = cookie.name.includes('auth-token') || cookie.name.includes('auth-refresh')
+        const cookieOptions: {
+          path: string
+          sameSite: 'lax' | 'strict' | 'none'
+          httpOnly: boolean
+          secure: boolean
+          maxAge?: number
+        } = {
+          path: '/',
+          sameSite: 'lax',
+          httpOnly: isAuthCookie,
+          secure: isProduction,
+        }
+        
+        // Set maxAge for auth cookies
+        if (isAuthCookie) {
+          if (cookie.name.includes('auth-token')) {
+            cookieOptions.maxAge = 60 * 60 * 24 * 7 // 7 days
+          } else if (cookie.name.includes('auth-refresh')) {
+            cookieOptions.maxAge = 60 * 60 * 24 * 30 // 30 days
+          }
+        }
+        
+        // CRITICAL: Explicitly set cookie on response
+        response.cookies.set(cookie.name, cookie.value, cookieOptions)
+      })
+    }
   }
   
   if (userError) {
@@ -421,6 +420,45 @@ export async function middleware(request: NextRequest) {
     response.headers.set('Pragma', 'no-cache')
   }
 
+  // PRODUCTION FIX: Before returning, verify cookies are in response headers
+  // Check if set-cookie headers contain sb- tokens
+  const finalCookies = response.cookies.getAll()
+  const finalAuthCookies = finalCookies.filter(c => 
+    c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
+  )
+  
+  // PRODUCTION DEBUG: Log final cookie state
+  if (isProduction && user) {
+    const setCookieHeader = response.headers.get('set-cookie')
+    const hasSetCookieHeader = setCookieHeader && setCookieHeader.includes('sb-')
+    
+    console.error(`[Middleware Production] Final check - Auth cookies in response: ${finalAuthCookies.length}, Set-Cookie header present: ${!!hasSetCookieHeader}`)
+    
+    // If user exists but no cookies, log warning
+    if (finalAuthCookies.length === 0) {
+      console.error(`[Middleware Production] ⚠️ CRITICAL: User authenticated but no auth cookies in final response!`)
+      console.error(`[Middleware Production] Set-Cookie header: ${setCookieHeader ? setCookieHeader.substring(0, 100) : 'null'}`)
+      
+      // LAST RESORT: Try to get cookies from request and set them one more time
+      const lastResortCookies = filteredCookies.filter(c => 
+        c.name.includes('sb-') && (c.name.includes('auth-token') || c.name.includes('auth-refresh'))
+      )
+      
+      if (lastResortCookies.length > 0) {
+        console.error(`[Middleware Production] 🔧 LAST RESORT: Re-attaching ${lastResortCookies.length} cookie(s) from request`)
+        lastResortCookies.forEach((cookie) => {
+          const isAuthCookie = cookie.name.includes('auth-token') || cookie.name.includes('auth-refresh')
+          response.cookies.set(cookie.name, cookie.value, {
+            path: '/',
+            sameSite: 'lax',
+            httpOnly: isAuthCookie,
+            secure: isProduction,
+            maxAge: isAuthCookie ? (cookie.name.includes('auth-token') ? 60 * 60 * 24 * 7 : 60 * 60 * 24 * 30) : undefined
+          })
+        })
+      }
+    }
+  }
 
   return response
 }
