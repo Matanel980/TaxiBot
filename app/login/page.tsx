@@ -172,6 +172,7 @@ export default function LoginPage() {
     e.preventDefault()
     setLoading(true)
     setError(null)
+    setErrorType(null)
 
     try {
       console.log('[DEBUG] Verifying OTP for phone:', phone)
@@ -191,135 +192,73 @@ export default function LoginPage() {
         error: verifyError 
       })
 
-      if (verifyError) throw verifyError
-
-      // CRITICAL: Wait for session to fully propagate
-      await new Promise(resolve => setTimeout(resolve, 500))
-
-      // Get fresh session
-      const { data: { session } } = await supabase.auth.getSession()
-      console.log('[DEBUG] Session after verification:', { 
-        hasSession: !!session, 
-        userId: session?.user?.id,
-        phone: session?.user?.phone 
-      })
-      
-      // DEBUG: Check browser cookies
-      console.log('[DEBUG] Browser cookies:', document.cookie.split(';').map(c => c.trim().split('=')[0]))
-      
-      if (!session) {
-        console.error('[ERROR] Session not persisted after OTP verification!')
-        setError('שגיאה בשמירת ההתחברות - אנא נסה שוב')
+      if (verifyError) {
+        const { mapAuthError } = await import('@/lib/auth-utils')
+        const authError = mapAuthError(verifyError, 'verifyOtp')
+        console.error('[ERROR] OTP verification failed:', authError)
+        setError(authError.hebrewMessage)
+        setErrorType('auth')
         setLoading(false)
         return
       }
 
-      const user = verifyData.user || session?.user
+      // CRITICAL ARCHITECTURAL SHIFT: Token-First Verification
+      // Bypass middleware and use server action for explicit session creation
+      const user = verifyData.user
+      const session = verifyData.session
       
-      if (user) {
-        console.log('[DEBUG] User authenticated:', user.id, user.phone)
-        
-        // Find the pre-created profile by phone
-        // CRITICAL: Include station_id for consistency with step 1 validation
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles')
-          .select('id, role, full_name, vehicle_number, car_type, station_id')
-          .eq('phone', phone)
-          .single()
-        
-        if (profileError || !profile) {
-          console.error('[ERROR] Profile not found for phone:', phone)
-          setError('לא נמצא פרופיל למשתמש זה. אנא פנה למנהל התחנה.')
-          setLoading(false)
-          return
-        }
-
-        console.log('[DEBUG] Profile found:', profile)
-
-        // Check if profile needs to be linked to auth user
-        if (profile.id !== user.id) {
-          console.log('[DEBUG] Profile ID mismatch. Old ID:', profile.id, 'New ID:', user.id)
-          console.log('[DEBUG] Attempting to link profile via API route...')
-          
-          // Use API route with service role to properly migrate profile
-          // (can't update primary key directly)
-          const linkResponse = await fetch('/api/auth/link-profile', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              oldProfileId: profile.id,
-              newUserId: user.id,
-              phone: phone
-            })
-          })
-
-          const linkResult = await linkResponse.json()
-
-          if (!linkResponse.ok || !linkResult.success) {
-            console.error('[ERROR] Failed to link profile to auth user:', linkResult.error)
-            setError('שגיאה בקישור הפרופיל. אנא פנה למנהל התחנה.')
-            setLoading(false)
-            return
-          }
-
-          console.log('[DEBUG] Successfully linked profile to auth user via API')
-          // Profile is now linked - continue with redirect below
-        }
-
-        // Get profile with correct ID (either already matched or newly linked)
-        // CRITICAL: Include station_id for validation
-        const { data: verifiedProfile, error: verifyError } = await supabase
-          .from('profiles')
-          .select('id, role, full_name, vehicle_number, car_type, station_id')
-          .eq('id', user.id)
-          .single()
-
-        if (verifyError || !verifiedProfile) {
-          console.error('[ERROR] Profile not found for user ID:', user.id)
-          setError('שגיאה באימות הפרופיל. אנא פנה למנהל התחנה.')
-          setLoading(false)
-          return
-        }
-
-        // Validate station_id after linking (consistent with step 1 requirement)
-        if (!verifiedProfile.station_id) {
-          console.error('[ERROR] Profile missing station_id after linking:', verifiedProfile)
-          setError('המשתמש לא משויך לתחנה. אנא פנה למנהל התחנה.')
-          setErrorType('station')
-          setLoading(false)
-          return
-        }
-
-        // Use verified profile for redirect logic (has correct ID and station_id)
-        const finalProfile = verifiedProfile
-
-        // Redirect based on role (use finalProfile which has correct ID)
-        if (finalProfile.role === 'admin') {
-          console.log('[DEBUG] Admin login, redirecting to admin dashboard')
-          alert('✅ התחברת בהצלחה כמנהל!')
-          window.location.replace('/admin/dashboard')
-        } else if (finalProfile.role === 'driver') {
-          // Check if onboarding needed
-          const isIncomplete = !finalProfile.vehicle_number || !finalProfile.car_type
-          console.log('[DEBUG] Driver login, incomplete profile:', isIncomplete)
-          
-          alert('✅ התחברת בהצלחה כנהג!')
-          if (isIncomplete) {
-            window.location.replace('/onboarding')
-          } else {
-            window.location.replace('/driver/dashboard')
-          }
-        } else {
-          setError('תפקיד לא תקין למשתמש זה')
-        }
-      } else {
+      if (!user || !session) {
+        console.error('[ERROR] Missing user or session after OTP verification')
         setError('שגיאה באימות - אנא נסה שוב')
+        setErrorType('auth')
+        setLoading(false)
+        return
+      }
+      
+      console.log('[DEBUG] User authenticated:', user.id, user.phone)
+      console.log('[DEBUG] Session tokens available, calling createSession server action...')
+      
+      // CRITICAL: Call server action to create session and verify/create profile
+      // This happens in a single atomic transaction on the server
+      const { createSession } = await import('@/app/actions/auth')
+      
+      const result = await createSession(
+        session.access_token,
+        session.refresh_token,
+        user.id,
+        phone
+      )
+      
+      if (!result.success) {
+        console.error('[ERROR] createSession failed:', result.error)
+        setError(result.error?.hebrewMessage || 'שגיאה בשמירת ההתחברות - אנא נסה שוב')
+        setErrorType(result.error?.code === 'STATION_ID_MISSING' ? 'station' : 'auth')
+        setLoading(false)
+        return
+      }
+      
+      console.log('[DEBUG] Session created successfully, redirecting to:', result.redirectPath)
+      
+      // Show success message and redirect
+      if (result.profile?.role === 'admin') {
+        alert('✅ התחברת בהצלחה כמנהל!')
+      } else {
+        alert('✅ התחברת בהצלחה כנהג!')
+      }
+      
+      // Redirect to appropriate dashboard
+      if (result.redirectPath) {
+        window.location.replace(result.redirectPath)
+      } else {
+        setError('שגיאה בהפניה - אנא נסה שוב')
+        setErrorType('auth')
       }
     } catch (err: any) {
       console.error('[ERROR] OTP verification failed:', err)
-      setError(err.message || 'קוד אימות שגוי')
+      const { mapAuthError } = await import('@/lib/auth-utils')
+      const authError = mapAuthError(err, 'handleOtpSubmit')
+      setError(authError.hebrewMessage)
+      setErrorType('auth')
     } finally {
       setLoading(false)
     }
