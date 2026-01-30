@@ -262,11 +262,18 @@ export async function middleware(request: NextRequest) {
     return redirectResponse
   }
 
-  // Auth-In-Progress Grace: Allow /auth/* routes
-  // CRITICAL: Return response AFTER Supabase has had a chance to update cookies
-  // The getUser() call above may have triggered cookie updates, which are now in response.cookies
-  if (pathname.startsWith('/auth/')) {
-    return response
+  // CRITICAL FIX: Early return for /login and /auth paths to prevent infinite redirect loops
+  // If user is already on /login or /auth, return immediately without any redirect logic
+  if (pathname === '/login' || pathname.startsWith('/auth/')) {
+    // Only redirect away from /login if user is authenticated (handled later)
+    // Otherwise, allow access to /login without redirecting
+    if (pathname === '/login' && !user) {
+      return response
+    }
+    // For /auth/* routes, always return immediately
+    if (pathname.startsWith('/auth/')) {
+      return response
+    }
   }
 
   // Admin whitelist emails (fallback only)
@@ -294,7 +301,8 @@ export async function middleware(request: NextRequest) {
   }
 
   // 1. Authenticated User Protection
-  if (isDriverPath || isAdminPath || isOnboardingPath) {
+  // CRITICAL FIX: Only redirect if path is NOT /login (prevents infinite loop)
+  if ((isDriverPath || isAdminPath || isOnboardingPath) && !isLoginPath) {
     if (!user) {
       return redirect('/login', 'Unauthenticated access to protected route')
     }
@@ -344,21 +352,28 @@ export async function middleware(request: NextRequest) {
 
     // 2. Strict Role-Based Access Control (RBAC)
     // ENTERPRISE-GRADE: Server-side role validation before page render
+    // CRITICAL FIX: Only redirect if not already on /login
     if (isAdminPath && userRole !== 'admin' && !isAdminEmail) {
       console.warn(`[Middleware] 🚫 RBAC Violation: User ${user.id} (role: ${userRole}) attempted to access /admin`)
-      return redirect('/login', 'Non-admin attempt to access /admin')
+      if (!isLoginPath) {
+        return redirect('/login', 'Non-admin attempt to access /admin')
+      }
     }
 
     if (isDriverPath && userRole !== 'driver' && !isAdminEmail) {
       console.warn(`[Middleware] 🚫 RBAC Violation: User ${user.id} (role: ${userRole}) attempted to access /driver`)
-      return redirect('/login', 'Unauthorized access to /driver')
+      if (!isLoginPath) {
+        return redirect('/login', 'Unauthorized access to /driver')
+      }
     }
     
     // ENTERPRISE-GRADE: Additional security - ensure drivers cannot trigger admin-only features
     // This is a defense-in-depth measure (RBAC is already enforced above)
     if (userRole === 'driver' && isAdminPath) {
       console.error(`[Middleware] ❌ CRITICAL: Driver ${user.id} attempted admin access - this should never happen after RBAC check`)
-      return redirect('/login', 'Security violation - contact admin')
+      if (!isLoginPath) {
+        return redirect('/login', 'Security violation - contact admin')
+      }
     }
 
     // 3. Driver Onboarding Guard
@@ -465,6 +480,13 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    /*
+     * Match all request paths except for the ones starting with:
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico (favicon file)
+     * - public folder files (images, etc.)
+     */
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|css|js|woff|woff2|ttf|eot)$).*)',
   ],
 }
