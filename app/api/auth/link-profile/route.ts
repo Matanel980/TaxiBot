@@ -58,11 +58,13 @@ export async function POST(request: NextRequest) {
     }
 
     // Step 2: Check if profile already exists with new ID (already linked)
-    const { data: existingProfile } = await adminSupabase
+    const existingResult = await adminSupabase
       .from('profiles')
       .select('id, phone, role, station_id')
       .eq('id', newUserId)
-      .single()
+      .maybeSingle()
+
+    const existingProfile = existingResult.data as { id: string; phone: string; role: string; station_id: string | null } | null
 
     if (existingProfile) {
       console.log('[Link Profile] Profile already linked:', {
@@ -79,11 +81,13 @@ export async function POST(request: NextRequest) {
 
     // Step 3: Validate new profile ID doesn't exist in profiles (double-check)
     // This ensures we don't attempt migration if target already exists
-    const { data: conflictingProfile } = await adminSupabase
+    const conflictingResult = await adminSupabase
       .from('profiles')
       .select('id, phone')
       .eq('id', newUserId)
       .maybeSingle()
+
+    const conflictingProfile = conflictingResult.data as { id: string; phone: string } | null
 
     if (conflictingProfile) {
       console.error('[Link Profile] New profile ID already exists:', {
@@ -107,11 +111,14 @@ export async function POST(request: NextRequest) {
     // 3. Updates trips.driver_id references
     // 4. Deletes old profile
     // All within a single atomic transaction
-    const { data: migrationResult, error: migrationError } = await adminSupabase
-      .rpc('migrate_profile_id', {
+    const migrationResponse = await adminSupabase
+      .rpc('migrate_profile_id' as any, {
         old_profile_id: oldProfileId,
         new_user_id: newUserId
-      })
+      } as any)
+    
+    const migrationResult = migrationResponse.data as { success: boolean; message?: string; trips_updated?: number; role?: string; phone?: string } | null
+    const migrationError = migrationResponse.error
 
     if (migrationError) {
       console.error('[Link Profile] Database migration function failed:', {

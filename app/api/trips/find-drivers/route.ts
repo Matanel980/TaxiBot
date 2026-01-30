@@ -107,12 +107,15 @@ export async function POST(request: NextRequest) {
     const supabase = createSupabaseAdminClient()
 
     // Call the enhanced PostGIS function with auto station detection
-    const { data, error } = await supabase.rpc('find_nearest_drivers_auto', {
+    const rpcResponse = await supabase.rpc('find_nearest_drivers_auto' as any, {
       pickup_lat,
       pickup_lng,
       zone_id_filter: zone_id || null,
       station_id_override: station_id || null,
-    })
+    } as any)
+    
+    const data = rpcResponse.data
+    const error = rpcResponse.error
 
     if (error) {
       console.error('[Find Drivers API] Error:', error)
@@ -127,7 +130,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Return clean JSON format for n8n
-    return NextResponse.json((data as FindNearestDriversResponse) || {
+    return NextResponse.json((data as FindNearestDriversResponse | null) || {
       success: false,
       error: 'No data returned from database function'
     })
@@ -228,12 +231,15 @@ export async function GET(request: NextRequest) {
     const supabase = createSupabaseAdminClient()
 
     // Call the enhanced PostGIS function
-    const { data, error } = await supabase.rpc('find_nearest_drivers_auto', {
+    const rpcResponse2 = await supabase.rpc('find_nearest_drivers_auto' as any, {
       pickup_lat,
       pickup_lng,
       zone_id_filter: zone_id || null,
       station_id_override: station_id || null,
-    })
+    } as any)
+    
+    const data = rpcResponse2.data
+    const error = rpcResponse2.error
 
     if (error) {
       console.error('[Find Drivers API] Error:', error)
@@ -247,7 +253,7 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    return NextResponse.json((data as FindNearestDriversResponse) || {
+    return NextResponse.json((data as FindNearestDriversResponse | null) || {
       success: false,
       error: 'No data returned from database function'
     })

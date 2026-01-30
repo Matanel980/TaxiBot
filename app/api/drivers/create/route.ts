@@ -102,11 +102,14 @@ export async function POST(request: NextRequest) {
     
     console.log('[DEBUG] Profile data to insert:', JSON.stringify(profileData, null, 2))
     
-    const { data: newDriver, error: profileError } = await supabaseAdmin
+    const insertResult = await supabaseAdmin
       .from('profiles')
-      .insert(profileData)
+      .insert(profileData as any)
       .select('id, full_name, phone, vehicle_number, car_type, is_approved, role, is_online, current_zone, latitude, longitude, updated_at')
       .single()
+    
+    const newDriver = insertResult.data as { id: string; full_name: string; phone: string; vehicle_number: string | null; car_type: string | null; is_approved: boolean; role: string; is_online: boolean; current_zone: string | null; latitude: number | null; longitude: number | null; updated_at: string } | null
+    const profileError = insertResult.error
 
     if (profileError) {
       console.error('[ERROR] Profile creation error:', profileError)

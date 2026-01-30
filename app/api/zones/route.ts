@@ -51,10 +51,10 @@ export async function GET(request: NextRequest) {
           .eq('role', 'driver')
           .eq('station_id', stationId) // STATION FILTER
 
-        const zonesWithCounts = legacyZones.map(zone => ({
+        const zonesWithCounts = legacyZones.map((zone: any) => ({
           ...zone,
           driverCount: drivers?.filter(
-            d => d.current_zone === zone.id && d.is_online
+            (d: any) => d.current_zone === zone.id && d.is_online
           ).length || 0
         }))
 
@@ -76,7 +76,7 @@ export async function GET(request: NextRequest) {
     // Convert to GeoJSON FeatureCollection
     const featureCollection: GeoJSON.FeatureCollection = {
       type: 'FeatureCollection',
-      features: zones?.map(zone => ({
+      features: zones?.map((zone: any) => ({
         type: 'Feature',
         id: zone.id,
         geometry: zone.geometry, // PostGIS returns geometry as GeoJSON
@@ -88,7 +88,7 @@ export async function GET(request: NextRequest) {
           center_lng: zone.center_lng,
           created_at: zone.created_at,
           driverCount: drivers?.filter(
-            d => d.current_zone === zone.id && d.is_online
+            (d: any) => d.current_zone === zone.id && d.is_online
           ).length || 0
         }
       })) || []

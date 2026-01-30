@@ -126,41 +126,50 @@ export async function createSession(
     console.log('[createSession] Cookies set for project:', projectId)
     
     // CRITICAL: Verify/Create profile synchronously (no trigger wait)
-    const adminClient = getCachedAdminClient()
+    // adminClient already defined above (line 73)
     
     // Step 1: Check if profile exists by user ID
-    let { data: profile, error: profileError } = await adminClient
+    const profileResult = await adminClient
       .from('profiles')
       .select('*')
       .eq('id', userId)
-      .single()
+      .maybeSingle()
+    
+    let profile: Profile | null = profileResult.data as Profile | null
+    let profileError = profileResult.error
     
     // Step 2: If not found by ID, check by phone (pre-created profile)
     if (profileError?.code === 'PGRST116' || !profile) {
       console.log('[createSession] Profile not found by ID, checking by phone...')
       
-      const { data: phoneProfile, error: phoneError } = await adminClient
+      const phoneResult = await adminClient
         .from('profiles')
         .select('*')
         .eq('phone', phone)
         .maybeSingle()
+      
+      const phoneProfile = phoneResult.data as Profile | null
+      const phoneError = phoneResult.error
       
       if (phoneProfile && !phoneError) {
         console.log('[createSession] Found profile by phone, ID mismatch:', phoneProfile.id, 'vs', userId)
         
         // Profile exists but ID doesn't match - migrate it
         // Use the migrate_profile_id function if it exists, otherwise create new and delete old
-        const { data: migrationResult, error: migrationError } = await adminClient
-          .rpc('migrate_profile_id', {
+        const migrationResponse = await adminClient
+          .rpc('migrate_profile_id' as any, {
             old_profile_id: phoneProfile.id,
             new_user_id: userId,
-          })
+          } as any)
+        
+        const migrationResult = migrationResponse.data
+        const migrationError = migrationResponse.error
         
         if (migrationError) {
           console.error('[createSession] Migration failed, creating new profile:', migrationError)
           
           // Migration failed - create new profile with user ID
-          const { data: newProfile, error: createError } = await adminClient
+          const insertResult = await adminClient
             .from('profiles')
             .insert({
               id: userId,
@@ -177,9 +186,12 @@ export async function createSession(
               longitude: phoneProfile.longitude,
               current_address: phoneProfile.current_address,
               heading: phoneProfile.heading,
-            })
+            } as any)
             .select()
             .single()
+          
+          const newProfile = insertResult.data as Profile | null
+          const createError = insertResult.error
           
           if (createError || !newProfile) {
             console.error('[createSession] Failed to create profile:', createError)
@@ -196,13 +208,13 @@ export async function createSession(
           profile = newProfile
         } else {
           // Migration succeeded, re-query profile
-          const { data: migratedProfile } = await adminClient
+          const migratedResult = await adminClient
             .from('profiles')
             .select('*')
             .eq('id', userId)
-            .single()
+            .maybeSingle()
           
-          profile = migratedProfile || undefined
+          profile = migratedResult.data as Profile | null
         }
       } else {
         // No profile exists at all - create new one
@@ -210,7 +222,7 @@ export async function createSession(
         
         // Try to get station_id from existing profiles with same phone pattern
         // Or use a default (this should be handled by admin creating driver first)
-        const { data: newProfile, error: createError } = await adminClient
+        const insertResult = await adminClient
           .from('profiles')
           .insert({
             id: userId,
@@ -225,9 +237,12 @@ export async function createSession(
             longitude: null,
             current_address: null,
             heading: null,
-          })
+          } as any)
           .select()
           .single()
+        
+        const newProfile = insertResult.data as Profile | null
+        const createError = insertResult.error
         
         if (createError || !newProfile) {
           console.error('[createSession] Failed to create profile:', createError)
