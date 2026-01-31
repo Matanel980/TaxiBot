@@ -215,8 +215,13 @@ export default function LoginPage() {
         return
       }
       
-      console.log('[DEBUG] User authenticated:', user.id, user.phone)
+      console.log('[DEBUG] User authenticated:', user.id, 'Auth phone:', user.phone, 'Formatted phone:', phone)
       console.log('[DEBUG] Session tokens available, calling createSession server action...')
+      
+      // CRITICAL: Use the phone from user object (matches auth.users format)
+      // The server action will do format-agnostic comparison anyway
+      // But using user.phone ensures consistency with what's stored in auth.users
+      const phoneForSession = user.phone || phone
       
       // CRITICAL: Call server action to create session and verify/create profile
       // This happens in a single atomic transaction on the server
@@ -226,7 +231,7 @@ export default function LoginPage() {
         session.access_token,
         session.refresh_token,
         user.id,
-        phone
+        phoneForSession // Use phone from user object if available
       )
       
       if (!result.success) {

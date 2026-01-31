@@ -17,6 +17,7 @@ import { cookies } from 'next/headers'
 import { createClient } from '@supabase/supabase-js'
 import { createSupabaseAdminClient } from '@/lib/supabase-server'
 import type { Profile } from '@/lib/supabase'
+import { extractPhoneDigits, comparePhones } from '@/lib/phone-utils'
 
 interface CreateSessionResult {
   success: boolean
@@ -87,9 +88,10 @@ export async function createSession(
       }
     }
     
-    // Verify phone matches
-    if (verifiedUser.phone !== phone) {
-      console.error('[createSession] Phone mismatch:', verifiedUser.phone, 'vs', phone)
+    // CRITICAL: Verify phone matches using format-agnostic comparison
+    // Auth user might have phone stored as "972509800301" while we receive "+972509800301"
+    if (!comparePhones(verifiedUser.phone || '', phone)) {
+      console.error('[createSession] Phone mismatch (format-agnostic):', verifiedUser.phone, 'vs', phone)
       return {
         success: false,
         error: {
@@ -99,6 +101,8 @@ export async function createSession(
         },
       }
     }
+    
+    console.log('[createSession] Phone verified (format-agnostic):', verifiedUser.phone, 'matches', phone)
     
     console.log('[createSession] Token verified successfully, user ID:', verifiedUser.id)
     
@@ -139,17 +143,26 @@ export async function createSession(
     let profileError = profileResult.error
     
     // Step 2: If not found by ID, check by phone (pre-created profile)
+    // CRITICAL: Use format-agnostic phone matching since phone formats may differ
     if (profileError?.code === 'PGRST116' || !profile) {
-      console.log('[createSession] Profile not found by ID, checking by phone...')
+      console.log('[createSession] Profile not found by ID, checking by phone (format-agnostic)...')
       
-      const phoneResult = await adminClient
+      // Fetch all profiles and match by phone digits (format-agnostic)
+      // This handles cases where phone is stored as "972509800301" vs "+972509800301"
+      const allProfilesResult = await adminClient
         .from('profiles')
         .select('*')
-        .eq('phone', phone)
-        .maybeSingle()
       
-      const phoneProfile = phoneResult.data as Profile | null
-      const phoneError = phoneResult.error
+      const allProfiles = (allProfilesResult.data || []) as Profile[]
+      const phoneDigits = extractPhoneDigits(phone)
+      
+      // Find profile by matching phone digits (format-agnostic)
+      const phoneProfile = allProfiles.find(p => {
+        const profileDigits = extractPhoneDigits(p.phone || '')
+        return profileDigits === phoneDigits
+      }) || null
+      
+      const phoneError = phoneProfile ? null : { code: 'PGRST116', message: 'Profile not found by phone' }
       
       if (phoneProfile && !phoneError) {
         console.log('[createSession] Found profile by phone, ID mismatch:', phoneProfile.id, 'vs', userId)
@@ -271,8 +284,8 @@ export async function createSession(
       }
     }
     
-    // CRITICAL: Sync role and station_id to JWT metadata
-    // This ensures RLS policies can read role from JWT
+    // CRITICAL: Sync role and station_id to JWT metadata BEFORE validation
+    // This ensures RLS policies can read role from JWT on next request
     try {
       await adminClient.auth.admin.updateUserById(userId, {
         user_metadata: {
@@ -280,31 +293,47 @@ export async function createSession(
           station_id: profile.station_id?.toString() || null,
         },
       })
-      console.log('[createSession] JWT metadata synced')
+      console.log('[createSession] JWT metadata synced - role:', profile.role, 'station_id:', profile.station_id)
     } catch (metadataError) {
       console.warn('[createSession] Failed to sync JWT metadata (non-critical):', metadataError)
       // Non-critical - continue even if metadata sync fails
     }
     
-    // Validate profile has required fields
-    if (!profile.station_id) {
+    // CRITICAL: Validate station_id - but only for admins or if profile requires it
+    // Drivers might not have station_id if they're being onboarded
+    // However, if profile exists and has station_id, it should be validated
+    if (profile.role === 'admin' && !profile.station_id) {
+      console.error('[createSession] Admin profile missing station_id')
       return {
         success: false,
         error: {
           code: 'STATION_ID_MISSING',
-          message: 'Profile missing station_id',
+          message: 'Admin profile missing station_id',
           hebrewMessage: 'המשתמש לא משויך לתחנה. אנא פנה למנהל התחנה.',
         },
       }
     }
     
-    // Determine redirect path
+    // For drivers, station_id is preferred but not strictly required if profile was just created
+    // If profile was pre-created (found by phone), it should have station_id
+    if (profile.role === 'driver' && !profile.station_id) {
+      console.warn('[createSession] Driver profile missing station_id - this may be a new profile')
+      // Allow driver to proceed to onboarding where station_id can be set
+      // Don't block login, but log warning
+    }
+    
+    // Determine redirect path based on role and profile completeness
     let redirectPath = '/login'
     if (profile.role === 'admin') {
       redirectPath = '/admin/dashboard'
     } else if (profile.role === 'driver') {
-      const isIncomplete = !profile.vehicle_number || !profile.car_type
+      // CRITICAL: Check if profile is incomplete (missing vehicle_number, car_type, or station_id)
+      const isIncomplete = !profile.vehicle_number || !profile.car_type || !profile.station_id
       redirectPath = isIncomplete ? '/onboarding' : '/driver/dashboard'
+      
+      if (isIncomplete) {
+        console.log('[createSession] Driver profile incomplete - redirecting to onboarding')
+      }
     }
     
     console.log('[createSession] Session created successfully, redirecting to:', redirectPath)
