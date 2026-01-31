@@ -110,11 +110,13 @@ export async function createSession(
     const projectId = supabaseUrl.match(/https?:\/\/([^.]+)\.supabase\.co/)?.[1] || ''
     
     // CRITICAL: Set cookies explicitly with Vercel-compatible options
+    // MUST match middleware cookie options exactly (domain, path, secure, sameSite)
     const cookieOptions = {
       httpOnly: true,
       secure: process.env.VERCEL === '1' || process.env.NODE_ENV === 'production',
       sameSite: 'lax' as const,
       path: '/',
+      domain: '', // CRITICAL: Leave empty to match middleware - let Vercel handle it automatically
       maxAge: 60 * 60 * 24 * 7, // 7 days for access token
     }
     
@@ -323,16 +325,24 @@ export async function createSession(
     }
     
     // Determine redirect path based on role and profile completeness
+    // CRITICAL: Explicit redirect logic - drivers without complete profiles MUST go to /onboarding
     let redirectPath = '/login'
     if (profile.role === 'admin') {
       redirectPath = '/admin/dashboard'
     } else if (profile.role === 'driver') {
       // CRITICAL: Check if profile is incomplete (missing vehicle_number, car_type, or station_id)
+      // Drivers without complete profiles MUST go to /onboarding, not dashboard
       const isIncomplete = !profile.vehicle_number || !profile.car_type || !profile.station_id
       redirectPath = isIncomplete ? '/onboarding' : '/driver/dashboard'
       
       if (isIncomplete) {
-        console.log('[createSession] Driver profile incomplete - redirecting to onboarding')
+        console.log('[createSession] Driver profile incomplete - redirecting to /onboarding (missing:', {
+          vehicle_number: !profile.vehicle_number,
+          car_type: !profile.car_type,
+          station_id: !profile.station_id
+        }, ')')
+      } else {
+        console.log('[createSession] Driver profile complete - redirecting to /driver/dashboard')
       }
     }
     

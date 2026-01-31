@@ -338,8 +338,17 @@ export async function middleware(request: NextRequest) {
 
   // 1. Authenticated User Protection
   // CRITICAL FIX: Only redirect if path is NOT /login (prevents infinite loop)
+  // GRACE PERIOD: Allow /onboarding to load even if session is temporarily missing
+  // This handles the case where cookies were just set but middleware hasn't seen them yet
   if ((isDriverPath || isAdminPath || isOnboardingPath) && !isLoginPath) {
     if (!user) {
+      // GRACE PERIOD: If user is accessing /onboarding without session, allow it
+      // This handles the case where createSession just set cookies but middleware hasn't seen them yet
+      // The client-side will handle auth check and redirect if needed
+      if (isOnboardingPath) {
+        console.warn(`[Middleware] ⚠️ Grace period: Allowing /onboarding access without session (cookies may be propagating)`)
+        return response
+      }
       return redirect('/login', 'Unauthenticated access to protected route')
     }
 

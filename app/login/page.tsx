@@ -244,16 +244,21 @@ export default function LoginPage() {
       
       console.log('[DEBUG] Session created successfully, redirecting to:', result.redirectPath)
       
-      // Show success message and redirect
-      if (result.profile?.role === 'admin') {
-        alert('✅ התחברת בהצלחה כמנהל!')
-      } else {
-        alert('✅ התחברת בהצלחה כנהג!')
-      }
-      
-      // Redirect to appropriate dashboard
+      // CRITICAL: Use hard navigation (window.location.href) instead of router.push()
+      // This forces a full page reload and ensures new cookies are sent to middleware
+      // window.location.replace() doesn't add to history, but window.location.href does
+      // For login, we want href to allow back button to work if needed
       if (result.redirectPath) {
-        window.location.replace(result.redirectPath)
+        // Show success message briefly, then hard navigate
+        if (result.profile?.role === 'admin') {
+          console.log('[DEBUG] ✅ Admin login successful, hard navigating to:', result.redirectPath)
+        } else {
+          console.log('[DEBUG] ✅ Driver login successful, hard navigating to:', result.redirectPath)
+        }
+        
+        // CRITICAL: Hard navigation forces full page reload with new cookies
+        // This breaks the login loop by ensuring middleware sees the new session
+        window.location.href = result.redirectPath
       } else {
         setError('שגיאה בהפניה - אנא נסה שוב')
         setErrorType('auth')
